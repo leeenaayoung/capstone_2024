@@ -1,393 +1,285 @@
+import os
+import csv
+import random
+import numpy as np
+import pandas as pd
 import torch
-import pandas as pd 
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.nn.utils.rnn import pad_sequence
-import random
-import os
-import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from torch import optim
+from tqdm import tqdm
 import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
-# 시드 고정
-def set_seed(seed=100):
+##########################
+# 1. 기본 설정 및 시드 고정
+##########################
+def set_seed(seed=42):
+    os.environ['PYTHONHASHSEED'] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    torch.cuda.manual_seed_all(seed)  # if using multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+#set_seed(42)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+##########################
+# 2. 전역 스케일러 (예시)
+##########################
+scaler = StandardScaler()
+
+##########################
+# 3. TrajectoryDataset
+##########################
 class TrajectoryDataset(Dataset):
     def __init__(self, base_path):
-        self.base_path = base_path
-        self.golden_dir = os.path.join(base_path, "golden_sample")
-        self.non_golden_dir = os.path.join(base_path, "non_golden_sample")
         self.data = []
         self.labels = []
-        self.scaler = StandardScaler()
-        self.model = None  
+        self.load_data(base_path)
 
-        self.classes = [
-            'clock_b', 'clock_big', 'clock_l', 'clock_m', 'clock_r', 'clock_t',
-            'counter_b', 'counter_big', 'counter_l', 'counter_m', 'counter_r', 
-            'counter_t', 'd_l', 'd_r', 'h_d', 'h_u', 'v_135', 'v_180', 'v_45', 'v_90'
-        ]
-        
-        # 라벨 인코더 초기화
-        self.label_encoder = LabelEncoder()
-        self.label_encoder.fit(self.classes)
-        
-        # 데이터 로드
-        self.load_data()
+        # 모든 데이터를 모은 후, 스케일링 적용
+        all_data = torch.cat(self.data, dim=0)  # (row-wise) 통합
+        scaler.fit(all_data)  # 스케일러에 fit
 
-    def process_data(self, df):
-        """데이터 전처리"""
-        # 열 이름을 수동으로 설정
-        expected_columns = ['r', 'sequence', 'timestamp', 'deg', 'deg/sec', 'mA', 
-                            'endpoint', 'grip/rotation', 'torque', 'force', 'ori', '#']
+        # 스케일링 후 다시 저장
+        scaled_data_list = []
+        for sample in self.data:
+            # sample: shape (seq_len, feature_dim)
+            # scaler.transform 은 (N, D) 형태가 필요하므로
+            sample_np = sample.numpy()
+            sample_scaled = scaler.transform(sample_np)
+            scaled_data_list.append(torch.tensor(sample_scaled, dtype=torch.float32))
 
-        df.columns = expected_columns
-        df = df[df['r'] != 's']
+        self.data = scaled_data_list  # 최종 교체
 
-        # 필요하지 않은 칼럼 삭제
-        df = df.drop(['r', 'grip/rotation', '#'], axis=1)
+    def load_data(self, base_path):
+        """
+        base_path 아래에 여러 '라벨 폴더'가 있고,
+        각 폴더에 .txt 파일들이 있다고 가정.
+        폴더 이름 = 라벨
+        """
+        # 예: base_path/label1/*.txt, base_path/label2/*.txt ...
+        for folder in sorted(os.listdir(base_path)):  # 폴더명 알파벳순
+            folder_path = os.path.join(base_path, folder)
+            if not os.path.isdir(folder_path):
+                continue  # 폴더가 아니면 스킵
 
-        # endpoint 및 ori 처리
-        df[['x_end', 'y_end', 'z_end']] = df['endpoint'].str.split('/', expand=True)
-        df[['yaw', 'pitch', 'roll']] = df['ori'].str.split('/', expand=True)
+            for file_name in sorted(os.listdir(folder_path)):
+                if file_name.endswith('.txt'):
+                    file_path = os.path.join(folder_path, file_name)
 
-        for col in ['deg', 'deg/sec', 'torque', 'force']:
-            parts = df[col].str.split('/', expand=True)
-            parts.columns = [f'{col}{i+1}' for i in range(parts.shape[1])]
-            df = pd.concat([df, parts], axis=1)
+                    with open(file_path, 'r') as f:
+                        reader = csv.reader(f)
+                        data_list = list(reader)
 
-        # 원본 칼럼 삭제
-        df = df.drop(['deg', 'deg/sec', 'mA', 'endpoint', 'torque', 'force', 'ori'], axis=1)
+                    # DataFrame 구성
+                    df_t = pd.DataFrame(data_list)
+                    df_t.columns = [
+                        'r', 'sequence', 'timestamp', 'deg', 'deg/sec', 'mA',
+                        'endpoint', 'grip/rotation', 'torque', 'force', 'ori', '#'
+                    ]
 
-        # 모든 칼럼을 숫자형으로 변환
-        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+                    # 필터링: r != 's'
+                    df_t = df_t[df_t['r'] != 's']
 
-        df['deg2'] = df['deg2'] - 90
-        df['deg4'] = df['deg4'] - 90
+                    # 필요없는 컬럼 삭제
+                    data_v = df_t.drop(['r', 'grip/rotation', '#'], axis=1)
 
-        # 'time' 칼럼 생성 및 데이터 정렬
-        df['time'] = df['timestamp'] - df['sequence'] - 1
-        df = df.drop(['sequence', 'timestamp'], axis=1)
-        df = df.sort_values(by=["time"], ascending=True).reset_index(drop=True)
+                    # endpoint split
+                    v_split = data_v['endpoint'].astype(str).str.split('/')
+                    data_v['x_end'] = v_split.str.get(0)
+                    data_v['y_end'] = v_split.str.get(1)
+                    data_v['z_end'] = v_split.str.get(2)
 
-        return df.values
-    
-    def get_random_trajectory_by_type(self, folder_path, movement_type):
-        if not os.path.exists(folder_path):
-            raise ValueError(f"경로가 존재하지 않습니다: {folder_path}")
-            
-        trajectory_files = [f for f in os.listdir(folder_path) 
-                            if f.endswith('.txt') and f.startswith(movement_type)]
-        
-        if not trajectory_files:
-            raise ValueError(f"폴더에 {movement_type} 타입의 궤적 파일이 없습니다: {folder_path}")
-            
-        selected_file = random.choice(trajectory_files)
-        file_path = os.path.join(folder_path, selected_file)
-        
-        df = pd.read_csv(file_path, delimiter=',')
-        processed_df = self.process_data(df)
+                    # deg split
+                    v_split = data_v['deg'].astype(str).str.split('/')
+                    data_v['deg1'] = v_split.str.get(0)
+                    data_v['deg2'] = v_split.str.get(1)
+                    data_v['deg3'] = v_split.str.get(2)
+                    data_v['deg4'] = v_split.str.get(3)
 
-        return processed_df, selected_file
+                    # deg/sec split
+                    v_split = data_v['deg/sec'].astype(str).str.split('/')
+                    data_v['degsec1'] = v_split.str.get(0)
+                    data_v['degsec2'] = v_split.str.get(1)
+                    data_v['degsec3'] = v_split.str.get(2)
+                    data_v['degsec4'] = v_split.str.get(3)
 
-    def get_available_movement_types(self):
-        golden_files = os.listdir(self.golden_dir)
-        movement_types = set()
-        
-        for file in golden_files:
-            if file.endswith('.txt'):
-                movement_type = '_'.join(file.split('_')[:2])
+                    # torque split
+                    v_split = data_v['torque'].astype(str).str.split('/')
+                    data_v['torque1'] = v_split.str.get(0)
+                    data_v['torque2'] = v_split.str.get(1)
+                    data_v['torque3'] = v_split.str.get(2)
 
-                movement_types.add(movement_type)
-        
-        return sorted(list(movement_types))
+                    # force split
+                    v_split = data_v['force'].astype(str).str.split('/')
+                    data_v['force1'] = v_split.str.get(0)
+                    data_v['force2'] = v_split.str.get(1)
+                    data_v['force3'] = v_split.str.get(2)
 
-    def load_data(self):
-        all_data = []
-        
-        print("Loading golden samples...")
-        for file in os.listdir(self.golden_dir):
-            if file.endswith('.txt'):
-                file_path = os.path.join(self.golden_dir, file)
-                try:
-                    df = pd.read_csv(file_path, delimiter=',')
-                    processed_df = self.process_data(df)
-                    all_data.append((processed_df, 1))  
-                except Exception as e:
-                    print(f"Error processing {file}: {str(e)}")
+                    # ori split
+                    v_split = data_v['ori'].astype(str).str.split('/')
+                    data_v['yaw'] = v_split.str.get(0)
+                    data_v['pitch'] = v_split.str.get(1)
+                    data_v['roll'] = v_split.str.get(2)
 
-        print("Loading non-golden samples...")
-        for file in os.listdir(self.non_golden_dir):
-            if file.endswith('.txt'):
-                file_path = os.path.join(self.non_golden_dir, file)
-                try:
-                    df = pd.read_csv(file_path, delimiter=',')
-                    processed_df = self.process_data(df)
-                    all_data.append((processed_df, 0))
-                except Exception as e:
-                    print(f"Error processing {file}: {str(e)}")
-                
-        data, labels = zip(*all_data)
-        
-        for i, d in enumerate(data):
-            if d.shape[1] != 21:  
-                print(f"Inconsistent shape at index {i}: {d.shape}")
-        
-        data = np.vstack(data)
-        self.scaler.fit(data)
-        
-        for d, label in zip(data, labels):
-            scaled_data = self.scaler.transform([d])[0]
-            self.data.append(torch.tensor(scaled_data, dtype=torch.float32))
-            self.labels.append(label)
-    
+                    # 원본 컬럼 제거
+                    data_v = data_v.drop(
+                        ['deg', 'deg/sec', 'mA', 'endpoint', 'torque', 'force', 'ori'],
+                        axis=1
+                    )
+
+                    # 숫자 변환
+                    data_v = data_v.apply(pd.to_numeric, errors='coerce').fillna(0)
+
+                    # time 열 생성
+                    data_v['time'] = data_v['timestamp'] - data_v['sequence'] - 1
+                    data_v = data_v.drop(['sequence', 'timestamp'], axis=1)
+
+                    # 시간 기준 정렬
+                    data_v.sort_values(by=["time"], ascending=True, inplace=True)
+                    data_v.reset_index(drop=True, inplace=True)
+
+                    # 텐서 변환
+                    tensor_data = torch.tensor(data_v.values, dtype=torch.float32)
+                    self.data.append(tensor_data)
+                    self.labels.append(folder)  # 폴더 이름을 라벨로
+
     def __len__(self):
         return len(self.labels)
-    
+
     def __getitem__(self, idx):
+        # 라벨 인덱스로 변환은 collate_fn에서 처리
         return self.data[idx], self.labels[idx]
-    
-    def set_model(self, model):
-        """학습된 모델 설정"""
-        self.model = model
-        return self
 
-    def predict_random_non_golden_trajectory(self):
+##########################
+# 4. 라벨 목록 추출
+##########################
+def get_unique_labels(base_path):
+    """주어진 base_path 폴더 아래 폴더명을 라벨로 보고, 모든 txt를 읽어서 labels 를 모은 뒤, 정렬 반환."""
+    tmp_dataset = TrajectoryDataset(base_path)
+    return sorted(list(set(tmp_dataset.labels)))
 
-        if self.model is None:
-            raise ValueError("Model not set. Call set_model() first.")
-
-        non_golden_files = [f for f in os.listdir(self.non_golden_dir) if f.endswith('.txt')]
-        selected_file = random.choice(non_golden_files)
-        file_path = os.path.join(self.non_golden_dir, selected_file)
-        
-        try:
-            # 데이터 로드 및 전처리
-            df = pd.read_csv(file_path, delimiter=',')
-            processed_df = self.process_data(df)  # 이미 21개의 열을 가진 형태로 처리됨
-            scaled_data = self.scaler.transform(processed_df)
-
-            data_tensor = torch.FloatTensor(scaled_data).unsqueeze(0).to(device)
-            
-            # 텐서로 변환 (배치 차원 추가)
-            # [시퀀스 길이, 특성 수] -> [배치 크기=1, 시퀀스 길이, 특성 수]
-            data_tensor = torch.FloatTensor(scaled_data).unsqueeze(0).to(device)
-
-            # 모델로 예측
-            self.model.eval()
-            with torch.no_grad():
-                outputs = self.model(data_tensor)
-                probabilities = torch.softmax(outputs, dim=1)  
-                predicted = torch.argmax(probabilities, dim=1)
-                predicted_type = self.classes[int(predicted[0].item())] 
-                predicted_prob = probabilities[0][predicted[0]].item()
-            
-            print(f"Selected non-golden trajectory: {selected_file}")
-            print(f"Predicted movement type: {predicted_type}")
-            
-            class_names = self.classes  # 클래스 이름이 저장된 리스트
-            prob_values = probabilities[0].cpu().numpy()  # 예측된 확률 값 (CPU로 이동)
-
-            # 막대 그래프 시각화
-            plt.figure(figsize=(10, 6))
-            plt.bar(class_names, prob_values, color='skyblue')
-            plt.xlabel('Classes')
-            plt.ylabel('Probability')
-            plt.title('Class Prediction Probabilities')
-            plt.xticks(rotation=90)
-            plt.tight_layout()
-            plt.show()
-
-            return selected_file, predicted_type, processed_df
-            
-        except Exception as e:
-            print(f"Error in prediction: {str(e)}")
-            return None, None, None
-
+##########################
+# 5. collate_fn
+##########################
 def collate_fn(batch):
-        data = [item[0] for item in batch]
-        labels = [item[1] for item in batch]
-        padded_data = []
-        for d in data:
-            if len(d.shape) == 1:  
-                d = d.unsqueeze(0)  
-                
-            if d.shape[0] > 21:
-                padded_data.append(d[:21])
-            else:
-                padding_length = 21 - d.shape[0]
-                padding = torch.zeros(padding_length, d.shape[1])
-                padded = torch.cat([d, padding], dim=0)
-                padded_data.append(padded)
-        
-        data = torch.stack(padded_data)
-        labels = torch.tensor(labels, dtype=torch.long)
-        
-        return data, labels
+    # batch: list of (data_tensor, label_str)
+    data_list = [item[0] for item in batch]
+    label_list = [item[1] for item in batch]
 
+    # pad_sequence -> (batch_size, max_len, feature_dim)
+    data_padded = pad_sequence(data_list, batch_first=True, padding_value=0)
+
+    # 라벨 인덱스 변환
+    label_indices = [unique_labels.index(lbl) for lbl in label_list]
+    label_indices = torch.tensor(label_indices, dtype=torch.long)
+
+    return data_padded, label_indices
+
+##########################
+# 6. 모델 정의
+##########################
 class TransformerModel(nn.Module):
     def __init__(self, input_dim, d_model, nhead, num_layers, num_classes, max_len=2000):
-        super(TransformerModel, self).__init__()
-        self.input_dim = input_dim
-        self.d_model = d_model
+        super().__init__()
         self.embedding = nn.Linear(input_dim, d_model)
+
+        # 위치 인코딩 (파라미터)
         self.positional_encoding = nn.Parameter(torch.randn(1, max_len, d_model))
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=d_model * 4,  
-            dropout=0.1,
-            batch_first=True,
-            activation='gelu' 
-        )
-        
+
+        # Transformer 인코더
         self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer,
+            nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead),
             num_layers=num_layers
         )
-        
-        self.classifier = nn.Sequential(
-            nn.Linear(d_model, d_model * 2),
-            nn.LayerNorm(d_model * 2),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(d_model * 2, num_classes)
-        )
         self.fc = nn.Linear(d_model, num_classes)
-        
+
     def forward(self, x):
+        # x: [batch, seq_len, input_dim]
         seq_len = x.size(1)
-        x = self.embedding(x)
-        
-        positional_encoding = self.positional_encoding[:, :seq_len, :] 
-        x = x + positional_encoding
-        
-        x = self.transformer_encoder(x)
-        x = x.mean(dim=1) 
-        return self.fc(x)
 
-def train_classification_model(dataset, unique_labels, model_params):
-    input_dim = model_params.get('input_dim', 21)
-    d_model = model_params.get('d_model', 128)
-    nhead = model_params.get('nhead', 2)
-    num_layers = model_params.get('num_layers', 5)
-    num_classes = len(unique_labels)  
-    batch_size = model_params.get('batch_size', 64)
-    epochs = model_params.get('epochs', 100)
+        # 위치 인코딩
+        pos_enc = self.positional_encoding[:, :seq_len, :].to(x.device)
 
-    model = TransformerModel(input_dim, d_model, nhead, num_layers, num_classes).to(device)
+        # 임베딩
+        x = self.embedding(x) + pos_enc
+        # Transformer는 (seq_len, batch, d_model) 형태를 기본으로 함
+        x = x.permute(1, 0, 2)  # -> [seq_len, batch, d_model]
 
+        x = self.transformer_encoder(x)  # [seq_len, batch, d_model]
+        x = x.mean(dim=0)                # [batch, d_model]
+        out = self.fc(x)                 # [batch, num_classes]
+        return out
 
-    train_size = int(0.8 * len(dataset))
-    val_size = int(0.1 * len(dataset))
-    test_size = len(dataset) - train_size - val_size
-    train_dataset, val_dataset, test_dataset = random_split(
-        dataset, [train_size, val_size, test_size])
+##########################
+# 7. 학습/검증 루프
+##########################
+def initialize_weights(m):
+    if isinstance(m, nn.Linear):
+        torch.nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, 
-                              shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, 
-                            shuffle=False, collate_fn=collate_fn)
+def train_and_validate(model, train_loader, val_loader, criterion, optimizer, num_epochs=100):
+    best_val_accuracy = 0.0
 
-    criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    
-    best_val_acc = 0
-    train_losses = []
-    val_accuracies = []
-    
-    def initialize_weights(m):
-        if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
-
-    model.apply(initialize_weights)
-
-    for epoch in range(epochs):
+    for epoch in range(num_epochs):
         model.train()
-        train_loss = 0
-        for batch_data, batch_labels in train_loader:
-            batch_data, batch_labels = batch_data.to(device), batch_labels.to(device)
+        train_loss = 0.0
+
+        # ---- Training ----
+        for data, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", unit="batch"):
+            data, labels = data.to(device), labels.to(device)
             optimizer.zero_grad()
-            outputs = model(batch_data)
-            loss = criterion(outputs, batch_labels)
+            outputs = model(data)
+            loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
-        
-        train_losses.append(train_loss / len(train_loader))
-        # 검증
+
+        # ---- Validation ----
         model.eval()
         val_correct = 0
-        val_total = 0
+        total_val = 0
         with torch.no_grad():
-            for batch_data, batch_labels in val_loader:
-                batch_data, batch_labels = batch_data.to(device), batch_labels.to(device)
-                outputs = model(batch_data)
-                _, predicted = torch.max(outputs.data, 1)
-                val_total += batch_labels.size(0)
-                val_correct += (predicted == batch_labels).sum().item()
-        
-        val_acc = val_correct / val_total
-        val_accuracies.append(val_acc)
+            for data, labels in val_loader:
+                data, labels = data.to(device), labels.to(device)
+                outputs = model(data)
+                _, predicted = torch.max(outputs, 1)
+                val_correct += (predicted == labels).sum().item()
+                total_val += labels.size(0)
 
-        print(f'Epoch [{epoch+1}/{epochs}], Loss: {train_loss/len(train_loader):.4f}, '
-              f'Val Accuracy: {val_acc:.4f}')
-        
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save(model.state_dict(), 'best_classification_model.pth')
+        val_accuracy = val_correct / total_val
 
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(train_losses, label='Train Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training Loss')
-    plt.legend()
+        if val_accuracy > best_val_accuracy:
+            best_val_accuracy = val_accuracy
+            torch.save(model.state_dict(), 'best_model.pth')
+            print(f"New best model saved with validation accuracy: {best_val_accuracy:.4f}")
 
-    plt.subplot(1, 2, 2)
-    plt.plot(val_accuracies, label='Validation Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.title('Validation Accuracy')
-    plt.legend()
+        print(f"Epoch [{epoch+1}/{num_epochs}], "
+              f"Train Loss: {train_loss/len(train_loader):.4f}, "
+              f"Val Accuracy: {val_accuracy:.4f}")
 
-    plt.show()
-    
-    return model, dataset.scaler
+    print("Training complete.")
 
-def test_classification_model(dataset, unique_labels, model_params):
-    input_dim = model_params.get('input_dim', 21)
-    d_model = model_params.get('d_model', 128)
-    nhead = model_params.get('nhead', 2)
-    num_layers = model_params.get('num_layers', )
-    num_classes = len(unique_labels) 
-    batch_size = model_params.get('batch_size', 64)
-    epochs = model_params.get('epochs', 100)
-    
-    test_loader = DataLoader(dataset, batch_size=32, shuffle=False, collate_fn=collate_fn)
-
-    model = TransformerModel(input_dim=input_dim, d_model=d_model, nhead=nhead, num_layers=num_layers, num_classes=num_classes).to(device)
-    model_weights = torch.load('best_classification_model.pth', weights_only=True)
-    model.load_state_dict(model_weights, strict=True)
-    model.eval()  
-
+##########################
+# 8. 테스트 함수
+##########################
+def test_model(model, test_loader):
+    model.eval()
     test_correct = 0
-    all_labels = []
-    all_predictions = []
+    total_test = 0
+    all_labels_list = []
+    all_preds_list = []
 
     with torch.no_grad():
         for data, labels in test_loader:
@@ -396,47 +288,161 @@ def test_classification_model(dataset, unique_labels, model_params):
             _, predicted = torch.max(outputs, 1)
 
             test_correct += (predicted == labels).sum().item()
-            all_labels.extend(labels.cpu().numpy())
-            all_predictions.extend(predicted.cpu().numpy())
+            total_test += labels.size(0)
 
-    test_accuracy = test_correct / len(dataset)
-    print(f"Test Accuracy: {test_accuracy:.4f}")
+            all_labels_list.extend(labels.cpu().numpy())
+            all_preds_list.extend(predicted.cpu().numpy())
 
-    return model, dataset.scaler
-    
-if __name__ == "__main__":
-    # set_seed()
-    
-    base_path = "data" 
+    test_acc = test_correct / total_test
+    print(f"Test Accuracy: {test_acc:.4f}")
+
+    # 혼동 행렬
+    cm_normalized = confusion_matrix(all_labels_list, all_preds_list, normalize='true')
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm_normalized, display_labels=unique_labels)
+    disp.plot(cmap=plt.cm.Blues)
+    plt.title("Normalized Confusion Matrix")
+    plt.show()
+
+##########################
+# 9. 단일 궤적 예측 함수
+##########################
+def load_and_preprocess_trajectory(file_path):
+    with open(file_path, 'r') as f:
+        reader = csv.reader(f)
+        data_list = list(reader)
+    df_t = pd.DataFrame(data_list, columns=[
+        'r', 'sequence', 'timestamp', 'deg', 'deg/sec', 'mA',
+        'endpoint', 'grip/rotation', 'torque', 'force', 'ori', '#'
+    ])
+
+    # 필터링
+    df_t = df_t[df_t['r'] != 's']
+    data_v = df_t.drop(['r', 'grip/rotation', '#'], axis=1)
+
+    # endpoint
+    v_split = data_v['endpoint'].astype(str).str.split('/')
+    data_v['x_end'] = v_split.str.get(0)
+    data_v['y_end'] = v_split.str.get(1)
+    data_v['z_end'] = v_split.str.get(2)
+
+    # deg
+    v_split = data_v['deg'].astype(str).str.split('/')
+    data_v['deg1'] = v_split.str.get(0)
+    data_v['deg2'] = v_split.str.get(1)
+    data_v['deg3'] = v_split.str.get(2)
+    data_v['deg4'] = v_split.str.get(3)
+
+    # deg/sec
+    v_split = data_v['deg/sec'].astype(str).str.split('/')
+    data_v['degsec1'] = v_split.str.get(0)
+    data_v['degsec2'] = v_split.str.get(1)
+    data_v['degsec3'] = v_split.str.get(2)
+    data_v['degsec4'] = v_split.str.get(3)
+
+    # torque
+    v_split = data_v['torque'].astype(str).str.split('/')
+    data_v['torque1'] = v_split.str.get(0)
+    data_v['torque2'] = v_split.str.get(1)
+    data_v['torque3'] = v_split.str.get(2)
+
+    # force
+    v_split = data_v['force'].astype(str).str.split('/')
+    data_v['force1'] = v_split.str.get(0)
+    data_v['force2'] = v_split.str.get(1)
+    data_v['force3'] = v_split.str.get(2)
+
+    # ori
+    v_split = data_v['ori'].astype(str).str.split('/')
+    data_v['yaw'] = v_split.str.get(0)
+    data_v['pitch'] = v_split.str.get(1)
+    data_v['roll'] = v_split.str.get(2)
+
+    # 제거
+    data_v = data_v.drop(['deg', 'deg/sec', 'mA', 'endpoint', 'torque', 'force', 'ori'], axis=1)
+
+    # 숫자 변환
+    data_v = data_v.apply(pd.to_numeric, errors='coerce').fillna(0)
+
+    # 'time' 열
+    data_v['time'] = data_v['timestamp'] - data_v['sequence'] - 1
+    data_v = data_v.drop(['sequence', 'timestamp'], axis=1)
+
+    # 시간 정렬
+    data_v.sort_values(by=['time'], ascending=True, inplace=True)
+    data_v.reset_index(drop=True, inplace=True)
+
+    # 스케일러 적용
+    arr_scaled = scaler.transform(data_v.values)
+    return torch.tensor(arr_scaled, dtype=torch.float32)
+
+##########################
+# 10. 메인 실행부
+##########################
+if __name__ == '__main__':
+    # 1) 데이터셋 생성
+    base_path = "data/all_data"  # TODO: 실제 폴더 경로로 수정
     dataset = TrajectoryDataset(base_path)
-    
-    model_params = {
-        'input_dim': 21,  
-        'd_model': 64,    
-        'nhead': 2,       
-        'num_layers': 3,  
-        'batch_size': 64, 
-        'epochs': 100     
-    }
-    
-    print("Training Start...")
-    model, scaler = train_classification_model(
-        dataset, 
-        dataset.classes,  
-        model_params
+
+    # 2) 고유 라벨 목록 추출
+    global unique_labels
+    unique_labels = sorted(list(set(dataset.labels)))
+    print("Unique labels:", unique_labels)
+
+    # 3) 하이퍼파라미터 설정
+    input_dim = 21  # 전처리 후 실제 피처 수
+    d_model = 32
+    nhead = 2
+    num_layers = 1
+    num_classes = len(unique_labels)
+    num_epochs = 100
+    batch_size = 32
+
+    # 4) 데이터셋 분할
+    train_size = int(0.8 * len(dataset))
+    val_size = int(0.1 * len(dataset))
+    test_size = len(dataset) - train_size - val_size
+    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
+
+    # 5) DataLoader
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+
+    # 6) 모델/손실함수/옵티마이저
+    model = TransformerModel(input_dim, d_model, nhead, num_layers, num_classes).to(device)
+    model.apply(initialize_weights)
+
+    criterion = nn.CrossEntropyLoss().to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    # 7) 학습/검증
+    #train_and_validate(model, train_loader, val_loader, criterion, optimizer, num_epochs)
+
+    # 8) 베스트 모델 로드 후 테스트
+    best_model = TransformerModel(input_dim, d_model, nhead, num_layers, num_classes).to(device)
+    best_model.load_state_dict(
+    torch.load('best_model.pth', map_location=torch.device('cpu'))
     )
-    dataset.set_model(model) 
-    print("Training complete.")
+    test_model(best_model, test_loader)
 
-    print("\nEvaluation Start...")
-    model, scaler = test_classification_model(
-        dataset, 
-        dataset.classes,  
-        model_params
-    )
+    # 9) 단일 궤적 예측 (non_golden_sample 폴더에서 랜덤 파일 선택)
+    non_golden_dir = "data/non_golden_sample"  # 실제 경로 맞춰주세요
+    txt_files = [f for f in os.listdir(non_golden_dir) if f.endswith('.txt')]
 
-    print("Evaluation complete.")
+    if not txt_files:
+        print(f"No .txt files found in {non_golden_dir}. Cannot do random prediction.")
+    else:
+        # 랜덤으로 하나 선택
+        selected_file = random.choice(txt_files)
+        test_file_path = os.path.join(non_golden_dir, selected_file)
 
-    print("\nPredicting random trajectory...")
-    selected_file, predicted_type, trajectory = dataset.predict_random_non_golden_trajectory()
+        best_model.eval()
+        single_data = load_and_preprocess_trajectory(test_file_path).unsqueeze(0).to(device)
+        with torch.no_grad():
+            out = best_model(single_data)
+            _, pred_idx = torch.max(out, 1)
+        pred_label = unique_labels[pred_idx.item()]
 
+        print(f"\n=== Random Non-Golden Prediction ===")
+        print(f"Selected file: {selected_file}")
+        print(f"Predicted label: {pred_label}")
