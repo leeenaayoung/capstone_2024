@@ -3,14 +3,18 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-from trajectory_generation import TrajectoryGenerator
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial.distance import euclidean
+from fastdtw import fastdtw
+import matplotlib.pyplot as plt
 import os
+from scipy.interpolate import interp1d
 import random
-from classification import TrajectoryDataset, set_seed, device, train_classification_model
+from c_t import TrajectoryDataset, set_seed, device, TransformerModel, get_unique_labels
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+scaler = StandardScaler()
 
 class TrajectoryLSTM(nn.Module):
    def __init__(self, input_size, hidden_size=128, num_layers=2):
@@ -34,19 +38,139 @@ class TrajectoryLSTM(nn.Module):
    def forward(self, x):
        lstm_out, _ = self.lstm(x)
        return self.fc(lstm_out[:, -1, :]) 
+   
+class TrajectoryGenerator:
+    """궤적 생성, 변환, 시각화를 담당하는 클래스"""
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def smooth_data(data, sigma=10):
+        """가우시안 필터를 사용한 라벨 스무딩"""
+        from scipy.ndimage import gaussian_filter1d
+        return gaussian_filter1d(data, sigma=sigma)
+
+    @staticmethod
+    def normalize_time(trajectory, num_points=100):
+        """시간에 대해 궤적을 정규화"""
+        current_length = len(trajectory)
+        old_time = np.linspace(0, 1, current_length)
+        new_time = np.linspace(0, 1, num_points)
+
+        interpolator_x = interp1d(old_time, trajectory[:, 0], kind='cubic')
+        interpolator_y = interp1d(old_time, trajectory[:, 1], kind='cubic')
+        interpolator_z = interp1d(old_time, trajectory[:, 2], kind='cubic')
+
+        return np.column_stack((
+            interpolator_x(new_time),
+            interpolator_y(new_time),
+            interpolator_z(new_time)
+        ))
+
+    def apply_dtw(self, target, subject, interpolation_weight=0.5):
+        """
+        DTW를 적용하여 궤적을 정렬하고 보간
+        
+        Parameters:
+            target: 타겟 궤적
+            subject: 사용자 궤적
+            interpolation_weight: 보간 가중치 (0: 사용자 궤적에 가깝게, 1: 타겟 궤적에 가깝게)
+        """
+        # 시간 정규화
+        target_norm = self.normalize_time(target)
+        subject_norm = self.normalize_time(subject)
+
+        # 스무딩 적용
+        target_smoothed = np.zeros_like(target_norm)
+        subject_smoothed = np.zeros_like(subject_norm)
+        for i in range(3):
+            target_smoothed[:, i] = self.smooth_data(target_norm[:, i])
+            subject_smoothed[:, i] = self.smooth_data(subject_norm[:, i])
+
+        # DTW 거리 및 경로 계산
+        distance, path = fastdtw(target_smoothed, subject_smoothed, dist=euclidean)
+        path = np.array(path)
+
+        # 매칭된 포인트들 추출
+        target_matched = target_smoothed[path[:, 0]]
+        subject_matched = subject_smoothed[path[:, 1]]
+
+        # 보간된 궤적 생성
+        interpolated = (target_matched * interpolation_weight + 
+                       subject_matched * (1 - interpolation_weight))
+
+        # 결과 궤적을 원본 길이로 리샘플링
+        return self.normalize_time(interpolated, num_points=len(target))
+
+    def compare_trajectories(self, target_df, user_df, save_animation=False):
+        """
+        타겟과 사용자 궤적을 비교하고 정렬된 궤적을 생성하여 시각화
+        
+        Parameters:
+            target_df: 타겟 궤적 데이터프레임
+            user_df: 사용자 궤적 데이터프레임
+            save_animation: 애니메이션 저장 여부
+        Returns:
+            aligned_trajectory: DTW로 정렬된 궤적
+        """
+        # 원본 궤적 포인트 추출
+        target_points = target_df[['x_end', 'y_end', 'z_end']].values
+        user_points = user_df[['x_end', 'y_end', 'z_end']].values
+        
+        # DTW를 사용하여 정렬된 궤적 생성
+        aligned_trajectory = self.apply_dtw(target_points, user_points)
+        
+        # 세 궤적 모두 시각화
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, projection='3d')
+
+        # 타겟 궤적
+        ax.plot(target_points[:, 0], target_points[:, 1], target_points[:, 2],
+                'b--', label='Target Trajectory')
+        
+        # 원본 사용자 궤적
+        ax.plot(user_points[:, 0], user_points[:, 1], user_points[:, 2],
+                'r--', label='Original Subject Trajectory')
+        
+        # 정렬된 궤적
+        ax.plot(aligned_trajectory[:, 0], aligned_trajectory[:, 1], aligned_trajectory[:, 2],
+                'g-', label='Aligned Subject Trajectory', linewidth=2)
+
+        # 그래프 설정
+        ax.set_xlabel('X Axis')
+        ax.set_ylabel('Y Axis')
+        ax.set_zlabel('Z Axis')
+        ax.set_title('Trajectory Alignment using DTW')
+        ax.view_init(10, 90)
+        ax.legend(bbox_to_anchor=(1.15, 1), loc='upper right')
+        ax.grid(True)
+
+        # 모든 궤적을 포함하도록 축 범위 설정
+        all_points = np.vstack([target_points, user_points, aligned_trajectory])
+        margin = 10  # 여백 추가
+        ax.set_xlim([min(all_points[:, 0]) - margin, max(all_points[:, 0]) + margin])
+        ax.set_ylim([min(all_points[:, 1]) - margin, max(all_points[:, 1]) + margin])
+        ax.set_zlim([min(all_points[:, 2]) - margin, max(all_points[:, 2]) + margin])
+
+        plt.show()
+        
+        return aligned_trajectory
 
 def transform_dataset_for_lstm(classification_dataset, sequence_length=50):
-   sequences = []
-   targets = []
-   
-   for data, _ in classification_dataset:
-       data_np = data.cpu().numpy()
-       for i in range(len(data_np) - sequence_length):
-           sequences.append(data_np[i:i + sequence_length])
-           targets.append(data_np[i + sequence_length])
-           
-   return (torch.FloatTensor(sequences).to(device), 
-           torch.FloatTensor(targets).to(device))
+    sequences = []
+    targets = []
+    
+    for data, _ in classification_dataset:
+        data_np = data.cpu().numpy()
+        for i in range(len(data_np) - sequence_length):
+            sequences.append(data_np[i:i + sequence_length])
+            targets.append(data_np[i + sequence_length])
+            
+    sequences_array = np.array(sequences)
+    targets_array = np.array(targets)
+    
+    return (torch.from_numpy(sequences_array).float().to(device), 
+            torch.from_numpy(targets_array).float().to(device))
 
 def train_trajectory_model(classification_dataset, movement_type, num_samples=10, epochs=100, batch_size=32):
    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -130,74 +254,86 @@ def train_trajectory_model(classification_dataset, movement_type, num_samples=10
    return model, history, classification_dataset.scaler
 
 def main():
-   base_dir = os.path.join(os.getcwd(), "data")
-   dataset = TrajectoryDataset(base_path=base_dir)  # 데이터셋 로드
-   generator = TrajectoryGenerator()
-   
-   try:
-       # 분류 모델 먼저 학습
-       print(f"Dataset size: {len(dataset)}")
-       unique_labels = dataset.get_available_movement_types()
-       print(f"Available movement types: {unique_labels}")
-       
-       # 분류 모델 학습
-       model_params = {
-           'input_dim': 21,
-           'd_model': 64,
-           'nhead': 2,
-           'num_layers': 3,
-           'batch_size': 32,
-           'epochs': 100
-       }
-       
-       classification_model, scaler = train_classification_model(dataset, unique_labels, model_params)
-       
-       print("\nTrajectory List", unique_labels)
-       
-       if unique_labels:
-           movement_type = random.choice(unique_labels)
-           print(f"\nCurrent Trajectory: {movement_type}")
-           
-           classification_dataset = dataset 
+    base_dir = os.path.join(os.getcwd(), "data")
+    dataset = TrajectoryDataset(base_path=base_dir)  # 데이터셋 로드
+    generator = TrajectoryGenerator()
+    
+    try:
+        # 데이터셋 정보 출력
+        print(f"Dataset size: {len(dataset)}")
+        unique_labels = get_unique_labels(base_path="data/all_data")
+        print(f"Available movement types: {unique_labels}")
+        
+        # 모델 파라미터 설정
+        model_params = {
+            'input_dim': 21,
+            'd_model': 32,
+            'nhead': 2,
+            'num_layers': 1
+        }
+        
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
 
-           # LSTM 모델 학습 - 같은 데이터셋 재사용
-           print("\nTraining Start...")
-           model, history, _ = train_trajectory_model(
-               dataset, movement_type, num_samples=10)
-           
-           # 테스트용 궤적 로드
-           print("\nLoad Test Trajectory...")
-           target_traj, user_traj = dataset.load_random_trajectories(movement_type)
-           
-           # LSTM으로 예측
-           print("\nTrajectory Prediction...")
-           device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-           if len(dataset) > 0:
-               sequence, _ = dataset[0]
-               sequence = sequence.unsqueeze(0).to(device)
-               
-               model.eval()
-               with torch.no_grad():
-                   predicted = model(sequence)
-                   predicted = predicted.cpu().numpy()
-                   predicted = scaler.inverse_transform(predicted)
-                   
-               print("Prediction Position:", predicted[0, :3]) 
-           
-           # 시각화 비교
-           print("\n궤적 비교 시각화...")
-           aligned_trajectory = generator.compare_trajectories(target_traj, user_traj)
-           
-           # 학습 결과 출력
-           print("\nTraining Results:")
-           print(f"Final train loss: {history['train_loss'][-1]:.4f}")
-           print(f"Final validation loss: {history['val_loss'][-1]:.4f}")
-           
-       else:
-           print("사용 가능한 동작 타입이 없습니다.")
-           
-   except Exception as e:
-       print(f"오류 발생: {str(e)}")
+        # 저장된 best model 불러오기
+        classification_model = TransformerModel(
+            input_dim=model_params['input_dim'],
+            d_model=model_params['d_model'],
+            nhead=model_params['nhead'],
+            num_layers=model_params['num_layers'],
+            num_classes=len(unique_labels)
+        ).to(device)
+        
+        classification_model.load_state_dict(
+            torch.load('best_model.pth', map_location=device)
+        )
+        classification_model.eval()  # 평가 모드로 설정
+        
+        print("\nTrajectory List", unique_labels)
+        
+        if unique_labels:
+            movement_type = random.choice(unique_labels)
+            print(f"\nCurrent Trajectory: {movement_type}")
+            
+            classification_dataset = dataset 
+
+            # LSTM 모델 학습 - 같은 데이터셋 재사용
+            print("\nTraining Start...")
+            model, history, _ = train_trajectory_model(
+                dataset, movement_type, num_samples=10)
+            
+            # 테스트용 궤적 로드
+            print("\nLoad Test Trajectory...")
+            target_traj, user_traj = dataset.load_random_trajectories(movement_type)
+            
+            # LSTM으로 예측
+            print("\nTrajectory Prediction...")
+            if len(dataset) > 0:
+                sequence, _ = dataset[0]
+                sequence = sequence.unsqueeze(0).to(device)
+                
+                model.eval()
+                with torch.no_grad():
+                    predicted = model(sequence)
+                    predicted = predicted.cpu().numpy()
+                    predicted = scaler.inverse_transform(predicted)
+                    
+                print("Prediction Position:", predicted[0, :3]) 
+            
+            # 시각화 비교
+            print("\n궤적 비교 시각화...")
+            aligned_trajectory = generator.compare_trajectories(target_traj, user_traj)
+            
+            # 학습 결과 출력
+            print("\nTraining Results:")
+            print(f"Final train loss: {history['train_loss'][-1]:.4f}")
+            print(f"Final validation loss: {history['val_loss'][-1]:.4f}")
+            
+        else:
+            print("사용 가능한 동작 타입이 없습니다.")
+            
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
 
 if __name__ == "__main__":
-   main()
+    main()
