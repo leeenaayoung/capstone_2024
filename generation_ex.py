@@ -158,7 +158,7 @@ def train_trajectory_model(analyzer, movement_type, num_samples=10, epochs=100, 
         #     best_val_loss = val_loss
         #     patience_counter = 0
         #     # 베스트 모델 저장
-        torch.save(model.state_dict(), 'best_model.pth')
+        torch.save(model.state_dict(), 'best_generation_model.pth')
         # else:
         #     patience_counter += 1
         #     if patience_counter >= patience:
@@ -166,7 +166,7 @@ def train_trajectory_model(analyzer, movement_type, num_samples=10, epochs=100, 
         #         break
     
     # 베스트 모델 로드
-    model.load_state_dict(torch.load('best_model.pth'))
+    model.load_state_dict(torch.load('best_generation_model.pth'))
     return model, history, dataset.scaler
 
 def main():
