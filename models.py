@@ -14,6 +14,7 @@ from fastdtw import fastdtw
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
+from torch.utils.data import Dataset
 from utils import preprocess_trajectory_data
 
 ##########################

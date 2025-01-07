@@ -7,9 +7,11 @@ from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
+from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 from models  import *
 
+caler = StandardScaler()
 ##########################
 # 데이터 전처리
 ##########################
