@@ -1,46 +1,119 @@
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from scipy.spatial.distance import euclidean
+# from torch.utils.data import Dataset, DataLoader
+# from sklearn.preprocessing import MinMaxScaler
 from fastdtw import fastdtw
-import matplotlib.pyplot as plt
-import os
 from scipy.interpolate import interp1d
+from scipy.spatial.distance import euclidean
+import os
 import random
-from c_t import TrajectoryDataset, set_seed, device, TransformerModel, get_unique_labels
+from utils import *
+from model import ClassificationDataset
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-scaler = StandardScaler()
+class TrajectoryAnalyzer:
+    def __init__(self, classification_model: str = "best_classification_model.pth", base_dir="data"):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        c_base_path = "data/all_data"
+        c_dataset = ClassificationDataset(c_base_path)
+        print("Available labels", c_dataset.unique_labels)
+        self.trajectory_types = {i: label for i, label in enumerate(c_dataset.unique_labels)}
+        print("\nGenerated trajectory_types:", self.trajectory_types)
+        self.classifier = self.load_classifier(classification_model)
+        self.base_dir = base_dir
 
-class TrajectoryLSTM(nn.Module):
-   def __init__(self, input_size, hidden_size=128, num_layers=2):
-       super(TrajectoryLSTM, self).__init__()
-       
-       self.lstm = nn.LSTM(
-           input_size=input_size,
-           hidden_size=hidden_size,
-           num_layers=num_layers,
-           batch_first=True,
-           dropout=0.2
-       )
-       
-       self.fc = nn.Sequential(
-           nn.Linear(hidden_size, 64),
-           nn.ReLU(),
-           nn.Dropout(0.2),
-           nn.Linear(64, input_size)
-       )
-       
-   def forward(self, x):
-       lstm_out, _ = self.lstm(x)
-       return self.fc(lstm_out[:, -1, :]) 
-   
+    def load_classifier(self, model_path : str):
+        """ 분류 모델 로드 """
+        try:
+            from model import TransformerModel
+            model = TransformerModel(
+                input_dim=21,      
+                d_model=32,       
+                nhead=2,           
+                num_layers=3,      
+                num_classes=len(self.trajectory_types)
+            ).to(self.device)
+
+            # 저장된 state_dict 로드
+            state_dict = torch.load(model_path, map_location=self.device)
+            print("state_dict keys:", state_dict.keys())
+            
+            # 가중치를 모델에 적용
+            model.load_state_dict(state_dict)
+            
+            # 평가 모드로 설정
+            model.eval()
+            
+            print(f"Successfully loaded classification model: {model_path}")
+            return model
+                
+        except Exception as e:
+            print(f"Error loading model: {str(e)}")
+            raise
+
+    def load_user_trajectory(self, file_path: str = "data/non_golden_sample"):
+        """ 사용자 궤적 로드 """
+        try:
+            df = pd.read_csv(file_path, delimiter=',')
+
+            processed_df = preprocess_trajectory_data(df)
+
+            tensor_data = torch.FloatTensor(processed_df.values).unsqueeze(0)
+            tensor_data = tensor_data.to(self.device)
+            
+            with torch.no_grad(): 
+                predictions = self.classifier(tensor_data)
+                predicted_class = torch.argmax(predictions, dim=1).item()
+
+                print(f"Predicted Class Index: {predicted_class}")
+                # print(f"예측 확률 분포: {torch.softmax(predictions, dim=1)}")
+                
+                # trajectory_types에서 해당 클래스 찾기
+                if predicted_class in self.trajectory_types:
+                    predicted_type = self.trajectory_types[predicted_class]
+                else:
+                    raise ValueError(f"Predicted Class Index {predicted_class}is not in the trajectory_types")
+            
+            print(f"Classification Result : ")
+            print(f"{predicted_type}")
+            
+            return processed_df, predicted_type
+            
+        except Exception as e:
+            print(f"Trajectory file {file_path} error during processing: {str(e)}")
+            raise
+
+    def load_target_trajectory(self, trajectory_type: str):
+        """ user_trajectory와 같은 타입의 target_trajectory 로드"""
+        try:
+            # 해당 타입으로 시작하는 모든 파일을 찾습니다
+            matching_files = [f for f in os.listdir(self.golden_dir) 
+                            if f.startswith(trajectory_type) and f.endswith('.txt')]
+            
+            if not matching_files:
+                raise ValueError(f"From the golden_sample directory {trajectory_type} can't find the trajectory of the type")
+            
+            # 매칭되는 파일들 중 하나를 무작위로 선택합니다
+            selected_file = random.choice(matching_files)
+            file_path = os.path.join(self.golden_dir, selected_file)
+            
+            # 선택된 파일을 로드하고 전처리합니다
+            df = pd.read_csv(file_path, delimiter=',')
+            processed_df = preprocess_trajectory_data(df)
+            
+            print(f"\nLoaded Target Trajectory:")
+            print(f"selected file: {selected_file}")
+            
+            return processed_df, selected_file
+            
+        except Exception as e:
+            print(f"Error loading target trajectory: {str(e)}")
+            raise
+
+# 궤적 생성, 변환, 시각화
 class TrajectoryGenerator:
-    """궤적 생성, 변환, 시각화를 담당하는 클래스"""
     def __init__(self):
         pass
 
@@ -68,14 +141,8 @@ class TrajectoryGenerator:
         ))
 
     def apply_dtw(self, target, subject, interpolation_weight=0.5):
-        """
-        DTW를 적용하여 궤적을 정렬하고 보간
-        
-        Parameters:
-            target: 타겟 궤적
-            subject: 사용자 궤적
-            interpolation_weight: 보간 가중치 (0: 사용자 궤적에 가깝게, 1: 타겟 궤적에 가깝게)
-        """
+        """ DTW를 적용하여 궤적을 정렬하고 보간 """
+
         # 시간 정규화
         target_norm = self.normalize_time(target)
         subject_norm = self.normalize_time(subject)
@@ -103,16 +170,8 @@ class TrajectoryGenerator:
         return self.normalize_time(interpolated, num_points=len(target))
 
     def compare_trajectories(self, target_df, user_df, save_animation=False):
-        """
-        타겟과 사용자 궤적을 비교하고 정렬된 궤적을 생성하여 시각화
-        
-        Parameters:
-            target_df: 타겟 궤적 데이터프레임
-            user_df: 사용자 궤적 데이터프레임
-            save_animation: 애니메이션 저장 여부
-        Returns:
-            aligned_trajectory: DTW로 정렬된 궤적
-        """
+        """ 타겟과 사용자 궤적을 비교하고 정렬된 궤적을 생성하여 시각화 """
+
         # 원본 궤적 포인트 추출
         target_points = target_df[['x_end', 'y_end', 'z_end']].values
         user_points = user_df[['x_end', 'y_end', 'z_end']].values
@@ -155,185 +214,63 @@ class TrajectoryGenerator:
         plt.show()
         
         return aligned_trajectory
-
-def transform_dataset_for_lstm(classification_dataset, sequence_length=50):
-    sequences = []
-    targets = []
     
-    for data, _ in classification_dataset:
-        data_np = data.cpu().numpy()
-        for i in range(len(data_np) - sequence_length):
-            sequences.append(data_np[i:i + sequence_length])
-            targets.append(data_np[i + sequence_length])
-            
-    sequences_array = np.array(sequences)
-    targets_array = np.array(targets)
-    
-    return (torch.from_numpy(sequences_array).float().to(device), 
-            torch.from_numpy(targets_array).float().to(device))
-
-def train_trajectory_model(classification_dataset, movement_type, num_samples=10, epochs=100, batch_size=32):
-   device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-   print(f"Using device: {device}")
-   
-   # classification_dataset을 LSTM용으로 변환
-   sequences, targets = transform_dataset_for_lstm(classification_dataset)
-   
-   # 데이터 분할  
-   dataset_size = len(sequences)
-   train_size = int(0.8 * dataset_size)
-   val_size = dataset_size - train_size
-   
-   indices = torch.randperm(dataset_size)
-   train_indices = indices[:train_size]
-   val_indices = indices[train_size:]
-   
-   train_sequences = sequences[train_indices]
-   train_targets = targets[train_indices]
-   val_sequences = sequences[val_indices]
-   val_targets = targets[val_indices]
-   
-   # 데이터로더 생성
-   train_dataset = torch.utils.data.TensorDataset(train_sequences, train_targets)
-   val_dataset = torch.utils.data.TensorDataset(val_sequences, val_targets)
-   
-   train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-   val_loader = DataLoader(val_dataset, batch_size=batch_size)
-   
-   # 모델 초기화
-   input_size = sequences.shape[-1]  # 특성 개수
-   model = TrajectoryLSTM(input_size=input_size).to(device)
-   
-   # 손실 함수와 옵티마이저 정의
-   criterion = nn.MSELoss()
-   optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-   
-   # 학습 기록
-   history = {'train_loss': [], 'val_loss': []}
-   
-   # 학습 루프
-   for epoch in range(epochs):
-       model.train()
-       train_loss = 0
-       for batch_idx, (data, target) in enumerate(train_loader):
-           data, target = data.to(device), target.to(device)
-           
-           optimizer.zero_grad()
-           output = model(data)
-           loss = criterion(output, target)
-           
-           loss.backward()
-           optimizer.step()
-           
-           train_loss += loss.item()
-       
-       train_loss /= len(train_loader)
-       
-       # 검증
-       model.eval()
-       val_loss = 0
-       with torch.no_grad():
-           for data, target in val_loader:
-               data, target = data.to(device), target.to(device)
-               output = model(data)
-               val_loss += criterion(output, target).item()
-       
-       val_loss /= len(val_loader)
-       
-       # 손실 기록
-       history['train_loss'].append(train_loss)
-       history['val_loss'].append(val_loss)
-       
-       print(f'Epoch {epoch+1}/{epochs}:')
-       print(f'Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
-       
-       torch.save(model.state_dict(), 'best_generation_model.pth')
-   
-   # 베스트 모델 로드
-   model.load_state_dict(torch.load('best_generation_model.pth'))
-   return model, history, classification_dataset.scaler
-
 def main():
+    # 기본 디렉토리 설정
     base_dir = os.path.join(os.getcwd(), "data")
-    dataset = TrajectoryDataset(base_path=base_dir)  # 데이터셋 로드
-    generator = TrajectoryGenerator()
     
     try:
-        # 데이터셋 정보 출력
-        print(f"Dataset size: {len(dataset)}")
-        unique_labels = get_unique_labels(base_path="data/all_data")
-        print(f"Available movement types: {unique_labels}")
-        
-        # 모델 파라미터 설정
-        model_params = {
-            'input_dim': 21,
-            'd_model': 32,
-            'nhead': 2,
-            'num_layers': 1
-        }
-        
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.deterministic = False
-
-        # 저장된 best model 불러오기
-        classification_model = TransformerModel(
-            input_dim=model_params['input_dim'],
-            d_model=model_params['d_model'],
-            nhead=model_params['nhead'],
-            num_layers=model_params['num_layers'],
-            num_classes=len(unique_labels)
-        ).to(device)
-        
-        classification_model.load_state_dict(
-            torch.load('best_model.pth', map_location=device)
+        # TrajectoryAnalyzer와 TrajectoryGenerator 객체 초기화
+        analyzer = TrajectoryAnalyzer(
+            classification_model="best_classification_model.pth",
+            base_dir=base_dir
         )
-        classification_model.eval()  # 평가 모드로 설정
+        generator = TrajectoryGenerator()
         
-        print("\nTrajectory List", unique_labels)
+        # 1. user trajectory 불러오기
+        print("\nLoading and classifying user trajectories...")
+        non_golden_dir = os.path.join(base_dir, "non_golden_sample")
+        non_golden_files = [f for f in os.listdir(non_golden_dir) 
+                          if f.endswith('.txt')]
         
-        if unique_labels:
-            movement_type = random.choice(unique_labels)
-            print(f"\nCurrent Trajectory: {movement_type}")
-            
-            classification_dataset = dataset 
+        if not non_golden_files:
+            raise ValueError("The trajectory file is missing in the non_golden_sample directory.")
+        
+        # 사용자 궤적 선택(가정)
+        selected_file = random.choice(non_golden_files)
+        print(f"Selected user trajectory: {selected_file}")
+        
+        # 선택된 사용자 궤적 로드 및 분류
+        file_path = os.path.join(non_golden_dir, selected_file)
+        user_trajectory, trajectory_type = analyzer.load_user_trajectory(file_path)
+        
+        # 타겟 궤적 로드
+        print("\nSearching for matching target trajectories...")
+        golden_dir = os.path.join(base_dir, "golden_sample")
+        golden_files = [f for f in os.listdir(golden_dir) 
+                       if f.startswith(trajectory_type) and f.endswith('.txt')]
+        
+        if not golden_files:
+            raise ValueError(f"'{trajectory_type}' target trajectory of type not found.")
 
-            # LSTM 모델 학습 - 같은 데이터셋 재사용
-            print("\nTraining Start...")
-            model, history, _ = train_trajectory_model(
-                dataset, movement_type, num_samples=10)
-            
-            # 테스트용 궤적 로드
-            print("\nLoad Test Trajectory...")
-            target_traj, user_traj = dataset.load_random_trajectories(movement_type)
-            
-            # LSTM으로 예측
-            print("\nTrajectory Prediction...")
-            if len(dataset) > 0:
-                sequence, _ = dataset[0]
-                sequence = sequence.unsqueeze(0).to(device)
-                
-                model.eval()
-                with torch.no_grad():
-                    predicted = model(sequence)
-                    predicted = predicted.cpu().numpy()
-                    predicted = scaler.inverse_transform(predicted)
-                    
-                print("Prediction Position:", predicted[0, :3]) 
-            
-            # 시각화 비교
-            print("\n궤적 비교 시각화...")
-            aligned_trajectory = generator.compare_trajectories(target_traj, user_traj)
-            
-            # 학습 결과 출력
-            print("\nTraining Results:")
-            print(f"Final train loss: {history['train_loss'][-1]:.4f}")
-            print(f"Final validation loss: {history['val_loss'][-1]:.4f}")
-            
-        else:
-            print("사용 가능한 동작 타입이 없습니다.")
-            
+        selected_golden = random.choice(golden_files)
+        golden_path = os.path.join(golden_dir, selected_golden)
+        target_trajectory = pd.read_csv(golden_path, delimiter=',')
+        target_trajectory = preprocess_trajectory_data(target_trajectory)
+        print(f"Selected Target Trajectory: {selected_golden}")
+        
+        # 궤적 비교 및 시각화
+        print("\nCompare and visualize trajectories")
+        aligned_trajectory = generator.compare_trajectories(
+            target_df=target_trajectory,
+            user_df=user_trajectory
+        )
+        
+        print("\nProcessing completed!")
+        
     except Exception as e:
-        print(f"오류 발생: {str(e)}")
+        print(f"\nError occurred: {str(e)}")
+        print("Please check the data directory structure and model path")
 
 if __name__ == "__main__":
     main()
