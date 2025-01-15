@@ -11,11 +11,10 @@ from scipy.spatial.distance import euclidean
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 
-scaler = StandardScaler()
 ##########################
 # 데이터 전처리
 ##########################
-def preprocess_trajectory_data(data_list):
+def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
     # DataFrame 구성
     df_t = pd.DataFrame(data_list, columns=[
         'r', 'sequence', 'timestamp', 'deg', 'deg/sec', 'mA',
@@ -54,5 +53,17 @@ def preprocess_trajectory_data(data_list):
     # 시간 기준 정렬
     data_v.sort_values(by=["time"], ascending=True, inplace=True)
     data_v.reset_index(drop=True, inplace=True)
+    
+    # 시각화 할 때 사용(스케일링 전 궤적)
+    preprocessed_df = data_v.copy()
+
+    # 데이터 스케일링
+    if scaler is not None:
+        scaled_data = scaler.transform(data_v.values)
+        scaled_df = pd.DataFrame(scaled_data, columns=preprocessed_df.columns)
+        
+        if return_raw:
+            return scaled_df, preprocessed_df  
+        return scaled_df
     
     return data_v
