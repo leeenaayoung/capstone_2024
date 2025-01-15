@@ -6,8 +6,9 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader, random_split
-# from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from functools import partial
 from model import TransformerModel, initialize_weights
 from sklearn.preprocessing import StandardScaler
@@ -26,6 +27,8 @@ def train_classification(model, train_loader, val_loader, criterion, optimizer, 
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0.0
+        train_predictions = []
+        actual_values = []
 
         # ---- Training ----
         for data, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", unit="batch"):
@@ -36,6 +39,13 @@ def train_classification(model, train_loader, val_loader, criterion, optimizer, 
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
+
+            # 예측값 계산
+            _, predicted = torch.max(outputs, 1)
+            
+            # CPU로 이동하고 리스트로 변환하여 저장
+            train_predictions.extend(predicted.cpu().numpy())
+            actual_values.extend(labels.cpu().numpy())
 
         # ---- Validation ----
         model.eval()
@@ -60,13 +70,16 @@ def train_classification(model, train_loader, val_loader, criterion, optimizer, 
               f"Train Loss: {train_loss/len(train_loader):.4f}, "
               f"Val Accuracy: {val_accuracy:.4f}")
 
-    print("Training complete.")
+        # 예측값과 실제값 비교(5개)
+        # print(f"Training predictions: {train_predictions[:5]}")
+        # print(f"Actual values: {actual_values[:5]}")
 
+    print("Training complete.")
 
 ##########################
 # 테스트
 ##########################
-# def test_model(model, test_loader):
+# def test_classification(model, test_loader):
 #     model.eval()
 #     test_correct = 0
 #     total_test = 0
@@ -189,7 +202,7 @@ def main():
     print("Unique labels:", c_dataset.unique_labels)
 
     # 3) 하이퍼파라미터 설정
-    input_dim = 21  # 전처리 후 실제 피처 수
+    input_dim = 21 
     d_model = 32
     nhead = 2
     num_layers = 3
@@ -225,6 +238,7 @@ def main():
     best_model.load_state_dict(
     torch.load('best_classification_model.pth', map_location=torch.device('cpu'))
     )
+    # 테스트
     # test_classification(best_model, classification_test_loader)
 
     # 단일 궤적 예측 (non_golden_sample 폴더에서 랜덤 파일 선택)
