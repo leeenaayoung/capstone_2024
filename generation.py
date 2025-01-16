@@ -205,11 +205,11 @@ class TrajectoryGenerator:
         
         # 타겟 궤적
         ax.plot(target_points[:, 0], target_points[:, 1], target_points[:, 2],
-                'b-', label='Target Trajectory')
+                'b--', label='Target Trajectory')
         
         # 원본 사용자 궤적
         ax.plot(user_points[:, 0], user_points[:, 1], user_points[:, 2],
-                'r-', label='Original Subject Trajectory')
+                'r--', label='Original Subject Trajectory')
         
         # 정렬된 궤적
         ax.plot(aligned_trajectory[:, 0], aligned_trajectory[:, 1], aligned_trajectory[:, 2],
@@ -219,7 +219,7 @@ class TrajectoryGenerator:
         ax.set_xlabel('X Axis')
         ax.set_ylabel('Y Axis')
         ax.set_zlabel('Z Axis')
-        ax.set_title('End-effector Trajectory Alignment using DTW')
+        ax.set_title('Trajectory Alignment using DTW')
         ax.view_init(10, 90)
         ax.legend(bbox_to_anchor=(1.15, 1), loc='upper right')
         ax.grid(True)
