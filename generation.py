@@ -2,9 +2,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as nn
-# from torch.utils.data import Dataset, DataLoader
-# from sklearn.preprocessing import MinMaxScaler
 from fastdtw import fastdtw
 from scipy.interpolate import interp1d
 from scipy.spatial.distance import euclidean
@@ -63,7 +60,7 @@ class TrajectoryAnalyzer:
             df = pd.read_csv(file_path, delimiter=',')
             scaled_df, preprocessed_df = preprocess_trajectory_data(df, scaler=self.c_dataset.scaler, return_raw=True)
 
-            # 분류 시 스케일링 적용된 데이터 사용용
+            # 분류 시 스케일링 적용된 데이터 사용
             tensor_data = torch.FloatTensor(scaled_df.values).unsqueeze(0)
             tensor_data = tensor_data.to(self.device)
             
@@ -94,7 +91,7 @@ class TrajectoryAnalyzer:
             if not matching_files:
                 raise ValueError(f"From the golden_sample directory {trajectory_type} can't find the trajectory of the type")
             
-            # 매칭되는 파일들 중 하나를 무작위로 선택(타겟 궤적 하나로 수정정)
+            # 매칭되는 파일들 중 하나를 무작위로 선택(타겟 궤적 하나로 수정)
             selected_file = random.choice(matching_files)
             file_path = os.path.join(self.golden_dir, selected_file)
             
@@ -135,11 +132,50 @@ class TrajectoryGenerator:
         
         return interpolated_trajectory
 
-    def apply_dtw(self, target, subject, interpolation_weight=0.5):
+    # 기존 
+    # def apply_dtw(self, target, subject, interpolation_weight=0.5):
+    #     """DTW를 적용하여 궤적을 정렬하고 보간"""
+    #     # 시간 정규화
+    #     target_norm = self.normalize_time(target)
+    #     subject_norm = self.normalize_time(subject)
+
+    #     # 스무딩 적용
+    #     target_smoothed = np.zeros_like(target_norm)
+    #     subject_smoothed = np.zeros_like(subject_norm)
+        
+    #     for i in range(target_norm.shape[1]):
+    #         target_smoothed[:, i] = self.smooth_data(target_norm[:, i])
+    #         subject_smoothed[:, i] = self.smooth_data(subject_norm[:, i])
+
+    #     # DTW 거리 및 경로 계산
+    #     distance, path = fastdtw(target_smoothed, subject_smoothed, dist=euclidean)
+    #     path = np.array(path)
+
+    #     # 매칭된 포인트들 추출
+    #     target_matched = target_smoothed[path[:, 0]]
+    #     subject_matched = subject_smoothed[path[:, 1]]
+
+    #     # 보간된 궤적 생성
+    #     interpolated = (target_matched * interpolation_weight + 
+    #                    subject_matched * (1 - interpolation_weight))
+
+    #     # 결과 궤적을 원본 길이로 리샘플링
+    #     return self.normalize_time(interpolated, num_points=len(target))
+
+    def apply_dtw(self, target, subject):
         """DTW를 적용하여 궤적을 정렬하고 보간"""
         # 시간 정규화
         target_norm = self.normalize_time(target)
         subject_norm = self.normalize_time(subject)
+
+        max_dims = max(target_norm.shape[1], subject_norm.shape[1])
+    
+        if target_norm.shape[1] < max_dims:
+            pad_width = ((0, 0), (0, max_dims - target_norm.shape[1]))
+            target_norm = np.pad(target_norm, pad_width, mode='constant', constant_values=0)
+        elif subject_norm.shape[1] < max_dims:
+            pad_width = ((0, 0), (0, max_dims - subject_norm.shape[1]))
+            subject_norm = np.pad(subject_norm, pad_width, mode='constant', constant_values=0)
 
         # 스무딩 적용
         target_smoothed = np.zeros_like(target_norm)
@@ -157,25 +193,20 @@ class TrajectoryGenerator:
         target_matched = target_smoothed[path[:, 0]]
         subject_matched = subject_smoothed[path[:, 1]]
 
-        # 보간된 궤적 생성
-        interpolated = (target_matched * interpolation_weight + 
-                       subject_matched * (1 - interpolation_weight))
+        # 보간 가중치 결정
+        interpolated_results = []
+    
+        # 각 가중치에 대해 보간 수행
+        for weight in np.arange(0.1, 1.0, 0.1):
+            # 보간된 궤적 생성
+            interpolated = (target_matched * weight + 
+                        subject_matched * (1 - weight))
+            
+            # 결과 궤적을 원본 길이로 리샘플링
+            resampled = self.normalize_time(interpolated, num_points=len(target))
+            interpolated_results.append(resampled)
 
-        # 결과 궤적을 원본 길이로 리샘플링
-        return self.normalize_time(interpolated, num_points=len(target))
-
-    # def calculate_end_effector_position(self, degrees):
-    #     """주어진 관절 각도로부터 엔드이펙터 위치 계산"""
-    #     q = np.radians(degrees)
-    #     x = (37 * np.cos(q[0]) * np.cos(q[1])) / 100 - (8 * np.sin(q[0]) * np.sin(q[3])) / 25 + \
-    #         (8 * np.cos(q[3]) * (np.cos(q[0]) * np.cos(q[1]) * np.cos(q[2]) - \
-    #         np.cos(q[0]) * np.sin(q[1]) * np.sin(q[2]))) / 25
-    #     y = (37 * np.cos(q[1]) * np.sin(q[0])) / 100 + (8 * np.cos(q[0]) * np.sin(q[3])) / 25 - \
-    #         (8 * np.cos(q[3]) * (np.sin(q[0]) * np.sin(q[1]) * np.sin(q[2]) - \
-    #         np.cos(q[1]) * np.cos(q[2]) * np.sin(q[0]))) / 25
-    #     z = (37 * np.sin(q[1])) / 100 + (8 * np.cos(q[3]) * (np.cos(q[1]) * np.sin(q[2]) + \
-    #         np.cos(q[2]) * np.sin(q[1]))) / 25
-    #     return np.array([x, y, z])
+        return interpolated_results
 
     def compare_trajectories(self, target_df, user_df, classification_result, generation_number=1):
         """타겟과 사용자 궤적을 비교하고 정렬된 궤적을 생성하여 시각화"""
@@ -188,56 +219,118 @@ class TrajectoryGenerator:
         user_degrees = user_df[['deg1', 'deg2', 'deg3', 'deg4']].values
         
         # DTW를 사용하여 정렬된 궤적 생성 (end-effector 위치 기반)
-        aligned_trajectory = self.apply_dtw(target_points, user_points)
+        # aligned_trajectory = self.apply_dtw(target_points, user_points)
         
         # 동일한 비율로 degree 값도 정렬
-        aligned_degrees = self.apply_dtw(target_degrees, user_degrees)
+        # aligned_degrees = self.apply_dtw(target_degrees, user_degrees)
+
+        # DTW를 사용하여 정렬된 궤적들 생성 (end-effector 위치 기반)
+        aligned_trajectories = self.apply_dtw(target_points, user_points)
+        
+        # 동일한 비율로 degree 값도 정렬
+        aligned_degrees_list = self.apply_dtw(target_degrees, user_degrees)
+
+        # 수정
+        # 각 가중치별 결과에 대해 처리
+        generated_dfs = []
+        for idx, (aligned_trajectory, aligned_degrees) in enumerate(zip(aligned_trajectories, aligned_degrees_list)):
+            weight = 0.1 * (idx + 1)
+            
+            # 생성된 궤적 저장 (end-effector 위치와 degree 값 모두)
+            generated_df = pd.DataFrame(
+                np.hstack([aligned_trajectory, aligned_degrees]),
+                columns=['x_end', 'y_end', 'z_end', 'deg1', 'deg2', 'deg3', 'deg4']
+            )
+            
+            # 시각화 (end-effector 궤적만)
+            fig = plt.figure(figsize=(12, 8))
+            ax = fig.add_subplot(111, projection='3d')
+            
+            # 타겟 궤적
+            ax.plot(target_points[:, 0], target_points[:, 1], target_points[:, 2],
+                    'b--', label='Target Trajectory')
+            
+            # 원본 사용자 궤적
+            ax.plot(user_points[:, 0], user_points[:, 1], user_points[:, 2],
+                    'r--', label='Original Subject Trajectory')
+            
+            # 정렬된 궤적
+            ax.plot(aligned_trajectory[:, 0], aligned_trajectory[:, 1], aligned_trajectory[:, 2],
+                    'g-', label=f'Aligned Trajectory (weight={weight:.1f})', linewidth=2)
+
+            # 그래프 설정
+            ax.set_xlabel('X Axis')
+            ax.set_ylabel('Y Axis')
+            ax.set_zlabel('Z Axis')
+            ax.set_title(f'Trajectory Alignment using DTW (weight={weight:.1f})')
+            ax.view_init(10, 90)
+            ax.legend(bbox_to_anchor=(1.15, 1), loc='upper right')
+            ax.grid(True)
+
+            # 모든 궤적을 포함하도록 축 범위 설정
+            all_points = np.vstack([target_points, user_points, aligned_trajectory])
+            margin = 10 
+            ax.set_xlim([min(all_points[:, 0]) - margin, max(all_points[:, 0]) + margin])
+            ax.set_ylim([min(all_points[:, 1]) - margin, max(all_points[:, 1]) + margin])
+            ax.set_zlim([min(all_points[:, 2]) - margin, max(all_points[:, 2]) + margin])
+
+            plt.tight_layout()
+            plt.show()
+            
+            # 생성된 궤적 저장
+            self.save_generated_trajectory(generated_df, classification_result, 
+                                        f"{generation_number}_w{weight:.1f}")
+            
+            generated_dfs.append(generated_df)
+        
+        return generated_dfs
         
         # 생성된 궤적 저장 (end-effector 위치와 degree 값 모두)
-        generated_df = pd.DataFrame(
-            np.hstack([aligned_trajectory, aligned_degrees]),
-            columns=['x_end', 'y_end', 'z_end', 'deg1', 'deg2', 'deg3', 'deg4']
-        )
+        # 기존
+        # generated_df = pd.DataFrame(
+        #     np.hstack([aligned_trajectory, aligned_degrees]),
+        #     columns=['x_end', 'y_end', 'z_end', 'deg1', 'deg2', 'deg3', 'deg4']
+        # )
         
-        # 시각화 (end-effector 궤적만)
-        fig = plt.figure(figsize=(12, 8))
-        ax = fig.add_subplot(111, projection='3d')
+        # # 시각화 (end-effector 궤적만)
+        # fig = plt.figure(figsize=(12, 8))
+        # ax = fig.add_subplot(111, projection='3d')
         
-        # 타겟 궤적
-        ax.plot(target_points[:, 0], target_points[:, 1], target_points[:, 2],
-                'b--', label='Target Trajectory')
+        # # 타겟 궤적
+        # ax.plot(target_points[:, 0], target_points[:, 1], target_points[:, 2],
+        #         'b--', label='Target Trajectory')
         
-        # 원본 사용자 궤적
-        ax.plot(user_points[:, 0], user_points[:, 1], user_points[:, 2],
-                'r--', label='Original Subject Trajectory')
+        # # 원본 사용자 궤적
+        # ax.plot(user_points[:, 0], user_points[:, 1], user_points[:, 2],
+        #         'r--', label='Original Subject Trajectory')
         
-        # 정렬된 궤적
-        ax.plot(aligned_trajectory[:, 0], aligned_trajectory[:, 1], aligned_trajectory[:, 2],
-                'g-', label='Aligned Subject Trajectory', linewidth=2)
+        # # 정렬된 궤적
+        # ax.plot(aligned_trajectory[:, 0], aligned_trajectory[:, 1], aligned_trajectory[:, 2],
+        #         'g-', label='Aligned Subject Trajectory', linewidth=2)
 
-        # 그래프 설정
-        ax.set_xlabel('X Axis')
-        ax.set_ylabel('Y Axis')
-        ax.set_zlabel('Z Axis')
-        ax.set_title('Trajectory Alignment using DTW')
-        ax.view_init(10, 90)
-        ax.legend(bbox_to_anchor=(1.15, 1), loc='upper right')
-        ax.grid(True)
+        # # 그래프 설정
+        # ax.set_xlabel('X Axis')
+        # ax.set_ylabel('Y Axis')
+        # ax.set_zlabel('Z Axis')
+        # ax.set_title('Trajectory Alignment using DTW')
+        # ax.view_init(10, 90)
+        # ax.legend(bbox_to_anchor=(1.15, 1), loc='upper right')
+        # ax.grid(True)
 
-        # 모든 궤적을 포함하도록 축 범위 설정
-        all_points = np.vstack([target_points, user_points, aligned_trajectory])
-        margin = 10  # 여백 추가
-        ax.set_xlim([min(all_points[:, 0]) - margin, max(all_points[:, 0]) + margin])
-        ax.set_ylim([min(all_points[:, 1]) - margin, max(all_points[:, 1]) + margin])
-        ax.set_zlim([min(all_points[:, 2]) - margin, max(all_points[:, 2]) + margin])
+        # # 모든 궤적을 포함하도록 축 범위 설정
+        # all_points = np.vstack([target_points, user_points, aligned_trajectory])
+        # margin = 10 
+        # ax.set_xlim([min(all_points[:, 0]) - margin, max(all_points[:, 0]) + margin])
+        # ax.set_ylim([min(all_points[:, 1]) - margin, max(all_points[:, 1]) + margin])
+        # ax.set_zlim([min(all_points[:, 2]) - margin, max(all_points[:, 2]) + margin])
 
-        plt.tight_layout()
-        plt.show()
+        # plt.tight_layout()
+        # plt.show()
         
-        # 생성된 궤적 저장
-        self.save_generated_trajectory(generated_df, classification_result, generation_number)
+        # # 생성된 궤적 저장
+        # self.save_generated_trajectory(generated_df, classification_result, generation_number)
         
-        return generated_df
+        # return generated_df
 
     def save_generated_trajectory(self, generated_df, classification_result, generation_number=1):
         """생성된 궤적을 지정된 형식으로 저장"""
@@ -286,7 +379,7 @@ class TrajectoryGenerator:
         
         # 파일 저장
         full_df.to_csv(generation_path, index=False)
-        print(f"\nGenerated trajectory saved to: {generation_path}")
+        # print(f"\nGenerated trajectory saved to: {generation_path}")
         
         return generation_path
 
@@ -334,19 +427,26 @@ def main():
         
         # 궤적 비교 및 시각화
         print("\nCompare and visualize trajectories")
-        
         generation_dir = os.path.join(os.getcwd(), "generation_trajectory")
         os.makedirs(generation_dir, exist_ok=True)
-        existing_files = [f for f in os.listdir(generation_dir) 
-                         if f.startswith(f"generation_trajectory_{trajectory_type}_")]
-        generation_number = len(existing_files) + 1
+        # existing_files = [f for f in os.listdir(generation_dir) 
+        #                  if f.startswith(f"generation_trajectory_{trajectory_type}_")]
+        # generation_number = len(existing_files) + 1
         
         # 궤적 생성 및 저장
-        generated_df = generator.compare_trajectories(
+        # 기존
+        # generated_df = generator.compare_trajectories(
+        #     target_df=target_trajectory,
+        #     user_df=user_trajectory,
+        #     classification_result=trajectory_type,
+        #     generation_number=generation_number
+        # )
+        # 각 가중치별로 궤적 생성 및 저장
+        generated_dfs = generator.compare_trajectories(
             target_df=target_trajectory,
             user_df=user_trajectory,
             classification_result=trajectory_type,
-            generation_number=generation_number
+            generation_number=1  # 또는 원하는 번호
         )
         
         print("\nProcessing completed!")
