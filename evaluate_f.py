@@ -1,0 +1,334 @@
+import numpy as np
+import pandas as pd
+from scipy.ndimage import gaussian_filter1d
+from fastdtw import fastdtw
+from scipy.spatial.distance import euclidean
+from model import ClassificationDataset
+from utils import *
+import random
+import os
+import math
+
+# 분류 모델 및 궤적 로드드
+class TrajectoryAnalyzer:
+    def __init__(self, classification_model: str = "best_classification_model.pth", base_dir="data"):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        c_base_path = "data/all_data"
+        self.c_dataset = ClassificationDataset(c_base_path)  
+        print("Available labels", self.c_dataset.unique_labels)
+
+        self.trajectory_types = {i: label for i, label in enumerate(self.c_dataset.unique_labels)}
+        print("\nGenerated trajectory_types:", self.trajectory_types)
+
+        self.classifier = self.load_classifier(classification_model)
+        self.base_dir = base_dir
+        self.golden_dir = os.path.join(self.base_dir, "golden_sample")
+
+    def load_classifier(self, model_path : str):
+        """ 분류 모델 로드 """
+        try:
+            from model import TransformerModel
+            model = TransformerModel(
+                input_dim=21,      
+                d_model=32,       
+                nhead=2,           
+                num_layers=3,      
+                num_classes=len(self.trajectory_types)
+            ).to(self.device)
+
+            # 저장된 state_dict 로드
+            state_dict = torch.load(model_path, map_location=self.device)
+            print("state_dict keys:", state_dict.keys())
+            
+            # 가중치를 모델에 적용
+            model.load_state_dict(state_dict)
+            
+            # 평가 모드로 설정
+            model.eval()
+            
+            print(f"Successfully loaded classification model : {model_path}")
+            return model
+                
+        except Exception as e:
+            print(f"Error loading model: {str(e)}")
+            raise
+
+    def load_user_trajectory(self, file_path: str = "data/non_golden_sample"):
+        """ 사용자 궤적 로드 """
+        try:
+            df = pd.read_csv(file_path, delimiter=',')
+            scaled_df, preprocessed_df = preprocess_trajectory_data(df, scaler=self.c_dataset.scaler, return_raw=True)
+
+            # 분류 시 스케일링 적용된 데이터 사용
+            tensor_data = torch.FloatTensor(scaled_df.values).unsqueeze(0)
+            tensor_data = tensor_data.to(self.device)
+            
+            with torch.no_grad(): 
+                predictions = self.classifier(tensor_data)
+                predicted_class = torch.argmax(predictions, dim=1).item()
+                
+                # trajectory_types에서 해당 클래스 찾기
+                if predicted_class in self.trajectory_types:
+                    predicted_type = self.trajectory_types[predicted_class]
+                else:
+                    raise ValueError(f"Predicted Class Index {predicted_class}is not in the trajectory_types")
+            
+            print(f"Classification Result : {predicted_type}")
+
+            return preprocessed_df, predicted_type
+            
+        except Exception as e:
+            print(f"Trajectory file {file_path} error during processing: {str(e)}")
+            raise
+
+    def load_target_trajectory(self, trajectory_type: str):
+        """ user_trajectory와 같은 타입의 target_trajectory 로드"""
+        try:
+            matching_files = [f for f in os.listdir(self.golden_dir) 
+                            if f.startswith(trajectory_type) and f.endswith('.txt')]
+            
+            if not matching_files:
+                raise ValueError(f"From the golden_sample directory {trajectory_type} can't find the trajectory of the type")
+            
+            # 매칭되는 파일들 중 하나를 무작위로 선택(타겟 궤적 하나로 수정)
+            selected_file = random.choice(matching_files)
+            file_path = os.path.join(self.golden_dir, selected_file)
+            
+            # 선택된 파일 로드 및 전처리
+            df = pd.read_csv(file_path, delimiter=',')
+            _, preprocessed_df = preprocess_trajectory_data(df, scaler=self.c_dataset.scaler, return_raw=True)
+
+            
+            return preprocessed_df, selected_file
+            
+        except Exception as e:
+            print(f"Error loading target trajectory: {str(e)}")
+            raise
+
+    def validate_input(df):
+        if len(df) < 3:
+            raise ValueError("Insufficient data points. At least 3 points are required.")
+        if not all(col in df.columns for col in ['x_end', 'y_end', 'z_end']):
+            raise ValueError("Input DataFrame must contain 'x_end', 'y_end', and 'z_end' columns.")
+        
+    def classify_trajectory_type(self, trajectory_type: str) -> str:
+        """세부 궤적 유형을 주요 궤적 유형(line, arc, circle)으로 분류"""
+        if any(t in trajectory_type for t in ['d_l', 'd_r']):
+            return 'line'
+        elif any(t in trajectory_type for t in ['v_45', 'v_90', 'v_135', 'v_180', 'h_u', 'h_d']):
+            return 'arc'
+        elif any(t in trajectory_type for t in ['clock', 'counter']):
+            return 'circle'
+        else:
+            raise ValueError(f"Unknown trajectory type: {trajectory_type}")
+
+# 궤적 평가
+class TrajectoryEvaluator:
+    def __init__(self):
+        self.trajectory_types = {
+            'line': ['d_l', 'd_r'],
+            'arc': {
+                'vertical': ['v_45', 'v_90', 'v_135', 'v_180'],
+                'horizontal': ['h_u', 'h_d']
+            },
+            'circle': {
+                'clockwise': ['clock_big', 'clock_t', 'clock_m', 'clock_b', 'clock_l', 'clock_r'],
+                'counter_clockwise': ['counter_big', 'counter_t', 'counter_m', 'counter_b', 'counter_l', 'counter_r']
+            }
+        }
+    
+    ####################
+    # 직선 궤적 평가
+    ####################
+    def evaluate_line(self, user_df):
+        user_points = user_df[['x_end', 'y_end', 'z_end']].values
+
+        def calculate_y_axis_angle(points):
+            start, end = points[0], points[-1]
+            dy = end[1] - start[1]
+            dx = end[0] - start[0]
+            dz = end[2] - start[2]
+            xy_angle = np.degrees(np.arctan2(dx, dy))
+            yz_angle = np.degrees(np.arctan2(dz, dy))
+            return xy_angle, yz_angle
+        
+        def calculate_line_height(points):
+            start, end = points[0], points[-1]
+            height = abs(end[1] - start[1])
+            return height
+        
+        def calculate_line_length(points):
+            distances = np.sqrt(np.sum(np.diff(points, axis=0)**2, axis=1))
+            return np.sum(distances)
+        
+        line_degree = calculate_y_axis_angle(user_points)
+        line_height = calculate_line_height(user_points)
+        line_length = calculate_line_length(user_points)
+        
+        return {
+            'line_degree' : line_degree,
+            'line_height': line_height,
+            'line_length': line_length
+        }
+    
+    ####################
+    # 호 궤적 평가
+    ####################
+    def evaluate_arc(self, user_df):
+        user_points = user_df[['x_end', 'y_end', 'z_end']].values
+
+        def fit_circle_from_arc(points):
+            p1, p2, p3 = points[0], points[len(points)//2], points[-1]
+            v1 = p2 - p1
+            v2 = p3 - p2
+            mid1 = (p1 + p2) / 2
+            mid2 = (p2 + p3) / 2
+            n1 = np.cross(v1, [0, 0, 1])
+            n2 = np.cross(v2, [0, 0, 1])
+            A = np.array([n1[:2], -n2[:2]]).T
+            b = mid2[:2] - mid1[:2]
+            t = np.linalg.solve(A, b)
+            center = mid1 + t[0] * np.append(n1[:2], 0)
+            radius = np.linalg.norm(center - p1)
+            return center, radius
+
+        def calculate_central_angle(points, center):
+            vectors = points - center
+            total_angle = 0
+            for i in range(1, len(vectors)):
+                v1 = vectors[i - 1]
+                v2 = vectors[i]
+                dot = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+                dot = np.clip(dot, -1.0, 1.0)
+                angle = np.arccos(dot)
+                total_angle += angle
+            return np.degrees(total_angle)
+
+        def calculate_arc_roundness(points, center):
+            distances = np.linalg.norm(points - center, axis=1)
+            std_distance = np.std(distances)
+            return std_distance
+
+        user_center, user_radius = fit_circle_from_arc(user_points)
+        user_angle = calculate_central_angle(user_points, user_center)
+        user_roundness = calculate_arc_roundness(user_points, user_center)
+
+        return {
+            'arc_radius': user_radius,
+            'arc_angle': user_angle,
+            'arc_roundness': user_roundness
+        }
+    ####################
+    # 원 궤적 평가
+    ####################
+    def evaluate_circle(self, user_df):
+        user_points = user_df[['x_end', 'y_end', 'z_end']].values
+
+        def calculate_circle_height(points):
+            max_height = np.max(points[:, 1])
+            min_height = np.min(points[:, 1])
+            height = max_height - min_height
+            return height
+        
+        def calculate_circle_ratio(points):
+            x_range = np.max(points[:, 0]) - np.min(points[:, 0])
+            y_range = np.max(points[:, 1]) - np.min(points[:, 1])
+            ratio = x_range / y_range
+            return ratio
+        
+        def calculate_circle_radius(points):
+            center = np.mean(points, axis=0)
+            distances = np.linalg.norm(points - center, axis=1)
+            radius = np.mean(distances)
+            return radius
+        
+        def calculate_start_end_distance(points):
+            start, end = points[0], points[-1]
+            distance = np.linalg.norm(start - end)
+            return distance
+        
+        circle_height = calculate_circle_height(user_points)
+        circle_ratio = calculate_circle_ratio(user_points)
+        circle_radius = calculate_circle_radius(user_points)
+        start_end_distance = calculate_start_end_distance(user_points)
+        
+        return {
+            'circle_height': circle_height,
+            'circle_ratio': circle_ratio,
+            'circle_radius': circle_radius,
+            'start_end_distance': start_end_distance
+        }
+    
+    def evaluate_trajectory(self, user_trajectory, trajectory_type):
+        """분류된 궤적 유형에 따른 평가 수행"""
+        try:      
+            # 직선 궤적 확인
+            if trajectory_type in self.trajectory_types['line']:
+                print("\nEvaluating line trajectory...")
+                return self.evaluate_line(user_trajectory)
+                
+            # 호 궤적 확인
+            if trajectory_type in self.trajectory_types['arc']['vertical'] or \
+            trajectory_type in self.trajectory_types['arc']['horizontal']:
+                print("\nEvaluating arc trajectory...")
+                return self.evaluate_arc(user_trajectory)
+                
+            # 원 궤적 확인
+            if trajectory_type in self.trajectory_types['circle']['clockwise'] or \
+            trajectory_type in self.trajectory_types['circle']['counter_clockwise']:
+                print("\nEvaluating circle trajectory...")
+                return self.evaluate_circle(user_trajectory)
+                
+            raise ValueError(f"Unknown trajectory type: {trajectory_type}")
+            
+        except Exception as e:
+            print(f"Error during trajectory evaluation: {str(e)}")
+            raise
+
+def main():
+    base_dir = os.path.join(os.getcwd(), "data")
+    
+    try:
+        # 분석기와 평가기 초기화
+        analyzer = TrajectoryAnalyzer(
+            classification_model="best_classification_model.pth",
+            base_dir=base_dir
+        )
+        evaluator = TrajectoryEvaluator()
+        
+        # 사용자 궤적 데이터 불러오기 및 분류
+        print("\nLoading and classifying user trajectories...")
+        non_golden_dir = os.path.join(base_dir, "non_golden_sample")
+        non_golden_files = [f for f in os.listdir(non_golden_dir) if f.endswith('.txt')]
+        
+        if not non_golden_files:
+            raise ValueError("No trajectory files found in the non_golden_sample directory.")
+        
+        # 파일 선택 및 궤적 로드
+        selected_file = random.choice(non_golden_files)
+        print(f"Selected user trajectory: {selected_file}")
+        
+        file_path = os.path.join(non_golden_dir, selected_file)
+        user_trajectory, trajectory_type = analyzer.load_user_trajectory(file_path)
+        
+        # 궤적 평가 수행
+        evaluation_result = evaluator.evaluate_trajectory(user_trajectory, trajectory_type)
+        
+        # 평가 결과 출력
+        print("\nEvaluation Results:")
+        for metric, value in evaluation_result.items():
+            if isinstance(value, float):
+                print(f"{metric}: {value:.4f}")
+            elif isinstance(value, tuple):
+                rounded_values = tuple(round(v, 4) for v in value)
+                print(f"{metric}: {rounded_values}")
+            else:
+                print(f"{metric}: {value}")
+
+    except Exception as e:
+        print(f"\nError occurred: {str(e)}")
+        print("Please check the data directory structure and model path")
+
+if __name__ == "__main__":
+    main()
