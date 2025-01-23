@@ -67,3 +67,19 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
         return scaled_df
     
     return data_v
+
+##################################
+# degree값 받아서 end_effector 계산
+##################################
+def calculate_end_effector_position(degrees):
+    """ degree값을 기준으로 endeffector 계산 """
+    q = np.radians(degrees)
+    x = (37 * np.cos(q[0]) * np.cos(q[1])) / 100 - (8 * np.sin(q[0]) * np.sin(q[3])) / 25 + \
+        (8 * np.cos(q[3]) * (np.cos(q[0]) * np.cos(q[1]) * np.cos(q[2]) - \
+        np.cos(q[0]) * np.sin(q[1]) * np.sin(q[2]))) / 25
+    y = (37 * np.cos(q[1]) * np.sin(q[0])) / 100 + (8 * np.cos(q[0]) * np.sin(q[3])) / 25 - \
+        (8 * np.cos(q[3]) * (np.sin(q[0]) * np.sin(q[1]) * np.sin(q[2]) - \
+        np.cos(q[1]) * np.cos(q[2]) * np.sin(q[0]))) / 25
+    z = (37 * np.sin(q[1])) / 100 + (8 * np.cos(q[3]) * (np.cos(q[1]) * np.sin(q[2]) + \
+        np.cos(q[2]) * np.sin(q[1]))) / 25
+    return np.array([x, y, z])
