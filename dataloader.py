@@ -12,10 +12,6 @@ def classification_dataloaders(base_path, batch_size, train_ratio=0.8, val_ratio
     train_dataset, val_dataset, test_dataset = random_split(
         dataset, [train_size, val_size, test_size]
     )
-
-    # train_loader = DataLoader(train_dataset, batch_size=batch_size, collate_fn = collate_fn, shuffle=True)
-    # val_loader = DataLoader(val_dataset, batch_size=batch_size, collate_fn = collate_fn, shuffle=False)
-    # test_loader = DataLoader(test_dataset, batch_size=batch_size, collate_fn = collate_fn, shuffle=False)
     
     from functools import partial
     collate_with_dataset = partial(collate_fn, dataset=dataset)
