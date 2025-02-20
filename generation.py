@@ -117,31 +117,54 @@ class TrajectoryGenerator:
         subject_angles = subject[:, :4]
         subject_velocities = subject[:, 4:]
 
-        # 각도와 각속도 정규화
+        # DTW를 통한 시간 정렬
         aligned_target, aligned_subject = self.normalize_time(target, subject)
         
-        # 정렬된 데이터에서 각도와 각속도 분리
+        # 정렬된 데이터 분리
         aligned_target_angles = aligned_target[:, :4]
         aligned_target_velocities = aligned_target[:, 4:]
         aligned_subject_angles = aligned_subject[:, :4]
         aligned_subject_velocities = aligned_subject[:, 4:]
 
-        # 보간
+        # 결과 저장을 위한 배열 초기화
         interpolated_degrees = np.zeros_like(aligned_target_angles)
         interpolated_velocities = np.zeros_like(aligned_target_velocities)
 
         for joint in range(4):
-            # 각도 보간
+            # 현재 joint의 각도 범위 계산
+            target_range = np.ptp(aligned_target_angles[:, joint])
+            subject_range = np.ptp(aligned_subject_angles[:, joint])
+            
+            # 보간 가중치 동적 조정
+            local_weight = interpolation_weight
+            if target_range > subject_range:
+                # 타겟의 움직임이 더 큰 경우, 타겟 쪽으로 더 치우친 보간
+                local_weight = interpolation_weight * 0.8
+            elif subject_range > target_range:
+                # 사용자의 움직임이 더 큰 경우, 사용자 쪽으로 더 치우친 보간
+                local_weight = interpolation_weight * 1.2
+
+            # 각도 차이 계산 및 보간
             angle_diff = aligned_subject_angles[:, joint] - aligned_target_angles[:, joint]
-            interpolated_degrees[:, joint] = aligned_target_angles[:, joint] + angle_diff * interpolation_weight
+            base_interpolation = aligned_target_angles[:, joint] + angle_diff * local_weight
+
+            # 각속도 고려한 보정
+            velocity_diff = aligned_subject_velocities[:, joint] - aligned_target_velocities[:, joint]
+            velocity_correction = velocity_diff * local_weight * 0.1  # 각속도의 영향력 조절
+            
+            # 최종 각도 계산
+            interpolated_degrees[:, joint] = base_interpolation + velocity_correction
 
             # 각속도 보간
-            vel_diff = aligned_subject_velocities[:, joint] - aligned_target_velocities[:, joint]
-            interpolated_velocities[:, joint] = aligned_target_velocities[:, joint] + vel_diff * interpolation_weight
+            interpolated_velocities[:, joint] = (
+                aligned_target_velocities[:, joint] + velocity_diff * local_weight
+            )
 
-            # 관절 제한 적용
+            # 관절 제한 부드럽게 적용
             min_val, max_val = self.joint_limits[joint]
-            interpolated_degrees[:, joint] = np.clip(interpolated_degrees[:, joint], min_val, max_val)
+            interpolated_degrees[:, joint] = np.clip(
+                interpolated_degrees[:, joint], min_val, max_val
+            )
 
         return interpolated_degrees, interpolated_velocities
     
@@ -192,6 +215,57 @@ class TrajectoryGenerator:
 
         return interpolated_degrees, interpolated_velocities
 
+    # 쿼터니안 적용 x 보간 코드
+    # def interpolate_circle(self, target, subject):
+    #         """원형 운동을 위한 SLERP 보간"""
+    #         aligned_target, aligned_subject = self.normalize_time(target, subject)
+
+    #         aligned_target_angles = aligned_target[:, :4]
+    #         aligned_target_velocities = aligned_target[:, 4:]
+    #         aligned_subject_angles = aligned_subject[:, :4]
+    #         aligned_subject_velocities = aligned_subject[:, 4:]
+
+    #         n_points = len(aligned_target_angles)
+    #         interpolated_degrees = np.zeros_like(aligned_target_angles)
+    #         interpolated_velocities = np.zeros_like(aligned_target_velocities)
+
+    #         t = np.linspace(0, 1, n_points)
+
+    #         # 원형 운동을 위한 사인 기반 가중치
+    #         phase = 2 * np.pi * t
+    #         weights = (1 - np.cos(phase)) / 2
+
+    #         for joint in range(4):
+    #             # 각도 차이 계산 (360도 고려)
+    #             angle_diff = aligned_subject_angles[:, joint] - aligned_target_angles[:, joint]
+    #             angle_diff = np.where(angle_diff > 180, angle_diff - 360,
+    #                                 np.where(angle_diff < -180, angle_diff + 360, angle_diff))
+
+    #             # SLERP로 보간
+    #             for i, w in enumerate(weights):
+    #                 theta = np.radians(angle_diff[i])
+    #                 if np.abs(theta) < 1e-6:
+    #                     interpolated_degrees[i, joint] = aligned_target_angles[i, joint]
+    #                 else:
+    #                     sin_theta = np.sin(theta)
+    #                     interpolated_degrees[i, joint] = (
+    #                         aligned_target_angles[i, joint] * np.sin((1-w) * theta) / sin_theta +
+    #                         aligned_subject_angles[i, joint] * np.sin(w * theta) / sin_theta
+    #                     )
+
+    #                 # 각속도는 선형 보간
+    #                 interpolated_velocities[i, joint] = (
+    #                     (1-w) * aligned_target_velocities[i, joint] +
+    #                     w * aligned_subject_velocities[i, joint]
+    #                 )
+
+    #             # 관절 제한 적용
+    #             min_val, max_val = self.joint_limits[joint]
+    #             interpolated_degrees[:, joint] = np.clip(interpolated_degrees[:, joint], min_val, max_val)
+
+    #         return interpolated_degrees, interpolated_velocities
+
+    # 쿼터니안 적용
     def interpolate_circle(self, target, subject):
         """쿼터니언 기반 SLERP를 사용한 원형 운동 보간"""
         aligned_target, aligned_subject = self.normalize_time(target, subject)
@@ -206,42 +280,65 @@ class TrajectoryGenerator:
         interpolated_velocities = np.zeros_like(aligned_target_velocities)
 
         t = np.linspace(0, 1, n_points)
-        
-        # 부드러운 원형 운동을 위한 easing function
-        # 기존의 사인 기반 가중치 대신 smooth step function 사용
-        weights = t * t * (3 - 2 * t)  
+        weights = t * t * (3 - 2 * t)  # smooth step function
 
         from scipy.spatial.transform import Rotation as R
         
-        # 4개 조인트를 한 번에 처리
         for i in range(n_points):
             # 타겟과 서브젝트의 각도를 라디안으로 변환
             target_rad = np.radians(aligned_target_angles[i])
             subject_rad = np.radians(aligned_subject_angles[i])
             
-            # 각도를 쿼터니언으로 변환
-            q_target = R.from_euler('xyz', target_rad[:3])  # 처음 3개 각도만 사용
+            # 각도를 회전 객체로 변환
+            q_target = R.from_euler('xyz', target_rad[:3])
             q_subject = R.from_euler('xyz', subject_rad[:3])
             
-            # SLERP 수행
-            q_interp = R.slerp([q_target], [q_subject], weights[i])
+            # 쿼터니언 값 추출
+            q_target_arr = q_target.as_quat()
+            q_subject_arr = q_subject.as_quat()
             
-            # 보간된 쿼터니언을 다시 오일러 각도로 변환
+            # SLERP 직접 구현
+            dot = np.sum(q_target_arr * q_subject_arr)
+            
+            # 최단 경로 보장
+            if dot < 0:
+                q_subject_arr = -q_subject_arr
+                dot = -dot
+                
+            # 각도가 매우 작은 경우 선형 보간
+            if dot > 0.9995:
+                result = q_target_arr + weights[i] * (q_subject_arr - q_target_arr)
+                result = result / np.linalg.norm(result)
+            else:
+                theta_0 = np.arccos(dot)
+                sin_theta_0 = np.sin(theta_0)
+                
+                theta = theta_0 * weights[i]
+                sin_theta = np.sin(theta)
+                
+                s0 = np.cos(theta) - dot * sin_theta / sin_theta_0
+                s1 = sin_theta / sin_theta_0
+                
+                result = s0 * q_target_arr + s1 * q_subject_arr
+                
+            # 보간된 쿼터니언을 회전 객체로 변환
+            q_interp = R.from_quat(result)
+            
+            # 오일러 각도로 변환
             euler_angles = q_interp.as_euler('xyz', degrees=True)
             interpolated_degrees[i, :3] = euler_angles
             
-            # 4번째 조인트는 별도로 선형 보간 (쿼터니언 변환이 불필요한 단일 축 회전)
+            # 4번째 조인트는 선형 보간
             interpolated_degrees[i, 3] = (1 - weights[i]) * aligned_target_angles[i, 3] + \
                                     weights[i] * aligned_subject_angles[i, 3]
             
-            # 각속도 보간 - 각운동량 보존을 고려한 보간
+            # 각속도 보간
             for j in range(4):
-                # 각속도의 부드러운 전환을 위한 hermite 보간
                 v0 = aligned_target_velocities[i, j]
                 v1 = aligned_subject_velocities[i, j]
                 w = weights[i]
                 
-                # Hermite 보간 공식
+                # Hermite 보간
                 h00 = 2*w**3 - 3*w**2 + 1
                 h10 = w**3 - 2*w**2 + w
                 h01 = -2*w**3 + 3*w**2
@@ -249,7 +346,7 @@ class TrajectoryGenerator:
                 
                 interpolated_velocities[i, j] = h00*v0 + h10*0 + h01*v1 + h11*0
 
-        # 관절 제한 적용 (부드러운 제한을 위해 sigmoid 함수 사용)
+        # 관절 제한 적용
         for joint in range(4):
             min_val, max_val = self.joint_limits[joint]
             
@@ -295,15 +392,15 @@ class TrajectoryGenerator:
         user_data = np.column_stack([user_angles, user_velocities])
         
         # 보간 방법 선택 및 적용
-        if 'clock' in trajectory_type.lower():
+        if 'clock' or 'counter' in trajectory_type.lower():
             print("Using circle interpolation")
             aligned_degrees, aligned_velocities = self.interpolate_circle(target_data, user_data)
-        elif 'counter' in trajectory_type.lower():
-            print("Using line interpolation")
-            aligned_degrees, aligned_velocities = self.interpolate_line(target_data, user_data)
-        else:
+        elif 'v_' or 'h_' in trajectory_type.lower():
             print("Using arc interpolation")
             aligned_degrees, aligned_velocities = self.interpolate_arc(target_data, user_data)
+        else:
+            print("Using line interpolation")
+            aligned_degrees, aligned_velocities = self.interpolate_line(target_data, user_data)
 
         # print("Interpolation completed")
         
@@ -320,7 +417,6 @@ class TrajectoryGenerator:
             np.column_stack([aligned_points, aligned_degrees]),
             columns=['x_end', 'y_end', 'z_end', 'deg1', 'deg2', 'deg3', 'deg4']
         )
-
         return generated_df
 
     def visualize_trajectories(self, target_df, user_df, generated_df, trajectory_type, generation_number=1):
