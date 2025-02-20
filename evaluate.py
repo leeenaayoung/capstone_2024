@@ -3,7 +3,7 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter1d
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
-from model import ClassificationDataset
+from dataloader import ClassificationDataset
 from utils import *
 import random
 import os

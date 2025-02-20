@@ -3,19 +3,19 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 from fastdtw import fastdtw
-from scipy.interpolate import CubicSpline, interp1d
+from scipy.interpolate import CubicSpline
 from scipy.spatial.distance import euclidean
 import os
 import random
 from analyzer import TrajectoryAnalyzer
-from utils import calculate_end_effector_position
+from utils import calculate_end_effector_position 
 
 # 궤적 생성, 변환, 시각화
 class TrajectoryGenerator:
     def __init__(self, analyzer):
         self.analyzer = analyzer
-        self.joint_limits = {
-            0: (-10, 110),   # degree 제한 범위 적용
+        self.joint_limits = {   
+            0: (-10, 110),
             1: (0, 150),     
             2: (0, 150),     
             3: (-90, 90)     
@@ -23,268 +23,314 @@ class TrajectoryGenerator:
 
     def smooth_data(self, data, R=0.02, Q=0.1):
         """칼만 필터를 사용한 데이터 스무딩"""
-        joint_angles = data[['deg1', 'deg2', 'deg3', 'deg4']].values
-        n_samples, n_joints = joint_angles.shape
-        smoothed_angles = np.zeros_like(joint_angles)
+        # 각도와 각속도 데이터 추출
+        angles = data[['deg1', 'deg2', 'deg3', 'deg4']].values
+        velocities = data[['degsec1', 'degsec2', 'degsec3', 'degsec4']].values
+        n_samples, n_joints = angles.shape
         
-        # 각 관절에 대해 칼만 필터 적용
-        for joint in range(n_joints):
-            x_hat = joint_angles[0, joint]  # 위치
-            v_hat = 0  # 초기 속도
-            x_hat_full = np.array([x_hat, v_hat])
-            P_full = np.eye(2)  # 초기 공분산 행렬
+        # 결과를 저장할 배열 초기화
+        smoothed_angles = np.zeros_like(angles)
+        smoothed_velocities = np.zeros_like(velocities)
+        
+        for joint in range(n_joints):   
+            # 초기 상태 설정
+            x_hat_full = np.array([angles[0, joint], velocities[0, joint]])
+            P_full = np.eye(2)
             
             # 시스템 행렬 설정
-            dt = 1.0  # 시간 간격
+            dt = 1.0
             A = np.array([[1, dt],
-                        [0, 1]])  # 상태 변환 행렬
-            H = np.array([1, 0])   # 측정 행렬
+                        [0, 1]])
+            H = np.eye(2) 
             
-            # 프로세스 노이즈 공분산 행렬
+            # 프로세스 노이즈 설정
             Q_matrix = Q * np.array([[dt**4/4, dt**3/2],
                                     [dt**3/2, dt**2]])
+            # 측정 노이즈 설정
+            R_matrix = np.diag([R, R*10]) 
             
-            # 칼만 필터 적용 (순방향)
-            smoothed_angles[0, joint] = x_hat
+            # 첫 번째 상태 저장
+            smoothed_angles[0, joint] = x_hat_full[0]
+            smoothed_velocities[0, joint] = x_hat_full[1]
+            
+            # 칼만 필터 적용
             for k in range(1, n_samples):
                 # 예측 단계
                 x_hat_full = A @ x_hat_full
                 P_full = A @ P_full @ A.T + Q_matrix
                 
+                # 현재 측정값
+                z = np.array([angles[k, joint], velocities[k, joint]])
+                
                 # 업데이트 단계
-                z = joint_angles[k, joint]  # 현재 측정값
-                y = z - H @ x_hat_full     # 측정 잔차
-                S = H @ P_full @ H.T + R   # 잔차 공분산
-                K = P_full @ H.T / S       # 칼만 이득
+                y = z - H @ x_hat_full
+                S = H @ P_full @ H.T + R_matrix
+                K = P_full @ H.T @ np.linalg.inv(S)
                 
                 # 상태 업데이트
-                x_hat_full = x_hat_full + K * y
-                P_full = (np.eye(2) - np.outer(K, H)) @ P_full
+                x_hat_full = x_hat_full + K @ y
+                P_full = (np.eye(2) - K @ H) @ P_full
                 
-                # 스무딩된 각도 저장
+                # 결과 저장
                 smoothed_angles[k, joint] = x_hat_full[0]
+                smoothed_velocities[k, joint] = x_hat_full[1]
         
-        # 스무딩된 데이터로 DataFrame 생성
+        # 결과를 데이터프레임으로 변환
         smoothed_df = data.copy()
         smoothed_df[['deg1', 'deg2', 'deg3', 'deg4']] = smoothed_angles
+        smoothed_df[['degsec1', 'degsec2', 'degsec3', 'degsec4']] = smoothed_velocities
         
         return smoothed_df
 
-    def normalize_time(self, trajectory, num_points=None):
+    def normalize_time(self, target_trajectory, subject_trajectory):
         """궤적을 시간에 대해 정규화"""
-        if num_points is None:
-            num_points = len(trajectory)
-        current_length = len(trajectory)
-        old_time = np.linspace(0, 1, current_length)
-        new_time = np.linspace(0, 1, num_points)
+        target_angles = target_trajectory[:, :4]
+        subject_angles = subject_trajectory[:, :4]
         
-        interpolated = np.zeros((num_points, trajectory.shape[1]))
-        for i in range(trajectory.shape[1]):
-            f = interp1d(old_time, trajectory[:, i], kind='cubic', bounds_error=False, fill_value="extrapolate")
-            interpolated[:, i] = f(new_time)
-        return interpolated
-
+        # 각도 데이터 정규화 (joint limits 기반)
+        normalized_target_angles = np.zeros_like(target_angles)
+        normalized_subject_angles = np.zeros_like(subject_angles)
+        
+        for joint in range(4):
+            min_val = self.joint_limits[joint][0] 
+            max_val = self.joint_limits[joint][1] 
+            range_val = max_val - min_val
+            normalized_target_angles[:, joint] = (target_angles[:, joint] - min_val) / range_val
+            normalized_subject_angles[:, joint] = (subject_angles[:, joint] - min_val) / range_val
+        
+        # DTW로 정렬
+        _, path = fastdtw(normalized_target_angles, normalized_subject_angles, dist=euclidean)
+        path = np.array(path, dtype=np.int32)
+        
+        # 찾은 경로로 전체 궤적 정렬 (각도 + 각속도)
+        aligned_target = target_trajectory[path[:, 0]]
+        aligned_subject = subject_trajectory[path[:, 1]]
+        
+        return aligned_target, aligned_subject
+        
     # 궤적의 종류에 따라 다른 보간 방법 적용
     def interpolate_line(self, target, subject, interpolation_weight=0.5):
         """DTW 기반 선형 보간"""
-        # 사용자 궤적 시간 정규화
-        target_normalized = self.normalize_time(target, num_points=len(target))
-        subject_normalized = self.normalize_time(subject, num_points=len(target))
-        
-        # DataFrame 생성
-        target_df = pd.DataFrame(target_normalized, columns=['deg1', 'deg2', 'deg3', 'deg4'])
-        subject_df = pd.DataFrame(subject_normalized, columns=['deg1', 'deg2', 'deg3', 'deg4'])
+        # 데이터 분리
+        target_angles = target[:, :4]  
+        target_velocities = target[:, 4:]
+        subject_angles = subject[:, :4]
+        subject_velocities = subject[:, 4:]
 
-        # 데이터 스무딩 적용
-        # target_smoothed = self.smooth_data(target_df)
-        # subject_smoothed = self.smooth_data(subject_df)
+        # 각도와 각속도 정규화
+        aligned_target, aligned_subject = self.normalize_time(target, subject)
         
-        # DTW 거리 및 경로 계산
-        distance, path = fastdtw(target_df, subject_df, dist=euclidean)
-        path = np.array(path)
+        # 정렬된 데이터에서 각도와 각속도 분리
+        aligned_target_angles = aligned_target[:, :4]
+        aligned_target_velocities = aligned_target[:, 4:]
+        aligned_subject_angles = aligned_subject[:, :4]
+        aligned_subject_velocities = aligned_subject[:, 4:]
 
-        # 매칭된 데이터 포인터 추출
-        target_matched = target_normalized[path[:, 0]]
-        subject_matched = subject_normalized[path[:, 1]]
+        # 보간
+        interpolated_degrees = np.zeros_like(aligned_target_angles)
+        interpolated_velocities = np.zeros_like(aligned_target_velocities)
 
-        # 보간된 관절 각도 계산
-        interpolated_degrees = np.zeros_like(target_matched)
-        
-        # 관절 각도 제한 적용
         for joint in range(4):
-            current_diff = subject[:, joint] - target[:, joint]
-            interpolated_degrees[:, joint] = target[:, joint] + current_diff * interpolation_weight
-            
+            # 각도 보간
+            angle_diff = aligned_subject_angles[:, joint] - aligned_target_angles[:, joint]
+            interpolated_degrees[:, joint] = aligned_target_angles[:, joint] + angle_diff * interpolation_weight
+
+            # 각속도 보간
+            vel_diff = aligned_subject_velocities[:, joint] - aligned_target_velocities[:, joint]
+            interpolated_velocities[:, joint] = aligned_target_velocities[:, joint] + vel_diff * interpolation_weight
+
             # 관절 제한 적용
             min_val, max_val = self.joint_limits[joint]
-            interpolated_degrees[:, joint] = np.clip(interpolated_degrees[:, joint], 
-                                                min_val, max_val)
-            
-        return interpolated_degrees
+            interpolated_degrees[:, joint] = np.clip(interpolated_degrees[:, joint], min_val, max_val)
 
+        return interpolated_degrees, interpolated_velocities
+    
     def interpolate_arc(self, target, subject):
         """Cubic Spline 기반 호 보간"""
-        # 사용자 궤적 시간 정규화
-        target_normalized = self.normalize_time(target, num_points=len(target))
-        subject_normalized = self.normalize_time(subject, num_points=len(target))
+        # 시간 정규화
+        aligned_target, aligned_subject = self.normalize_time(target, subject)
+        
+        # 데이터 분리
+        aligned_target_angles = aligned_target[:, :4]
+        aligned_target_velocities = aligned_target[:, 4:]
+        aligned_subject_angles = aligned_subject[:, :4]
+        aligned_subject_velocities = aligned_subject[:, 4:]
 
-        interpolated_degrees = np.zeros((len(target_normalized), 4))
-        t = np.linspace(0, 1, len(target_normalized)) 
+        n_points = len(aligned_target_angles)
+        interpolated_degrees = np.zeros_like(aligned_target_angles)
+        interpolated_velocities = np.zeros_like(aligned_target_velocities)
         
-        # 각 관절별 다른 가중치 설정
-        joint_weights = {
-            0: 0.5,    
-            1: 0.5,    
-            2: 0.5,    
-            3: 0.5     
-        }
+        # 시간 포인트
+        t = np.linspace(0, 1, n_points)
         
-        # 각 관절별 보간
         for joint in range(4):
-            target_interp = target_normalized[:, joint]
-            subject_interp = subject_normalized[:, joint]
+            # 3개의 제어점 사용
+            control_indices = [0, n_points//2, -1]
+            control_times = [0, 0.5, 1]
             
-            # 각도 차이 계산 및 보정
-            angle_diffs = subject_interp - target_interp
-            angle_diffs = np.where(angle_diffs > 180, angle_diffs - 360,
-                                np.where(angle_diffs < -180, angle_diffs + 360, angle_diffs))
+            # 제어점의 각도와 각속도 계산
+            control_angles = np.zeros(len(control_indices))
+            control_velocities = np.zeros(len(control_indices))
             
-            # 현재 관절의 가중치 가져오기
-            weight = joint_weights[joint]
+            for i, idx in enumerate(control_indices):
+                control_angles[i] = (0.6 * aligned_target_angles[idx, joint] + 
+                                    0.4 * aligned_subject_angles[idx, joint])
+                control_velocities[i] = (0.6 * aligned_target_velocities[idx, joint] + 
+                                        0.4 * aligned_subject_velocities[idx, joint])
             
-            # 제어점 설정 (시작점, 중간점, 끝점)
-            control_points = np.array([
-                target_interp[0],  # 시작점
-                target_interp[0] + weight * angle_diffs[0],  # 중간 제어점 
-                target_interp[-1] + weight * angle_diffs[-1],  # 중간 제어점 
-                target_interp[-1] + angle_diffs[-1]  # 끝점
-            ])
+            # Cubic Spline 보간
+            cs_angle = CubicSpline(control_times, control_angles)
+            cs_vel = CubicSpline(control_times, control_velocities)
             
-            # Cubic Spline 보간 적용
-            cs = CubicSpline(np.linspace(0, 1, 4), control_points)
-            interpolated_angles = cs(t)
+            # 보간된 값 계산
+            interpolated_degrees[:, joint] = cs_angle(t)
+            interpolated_velocities[:, joint] = cs_vel(t)
             
             # 관절 제한 적용
             min_val, max_val = self.joint_limits[joint]
-            interpolated_degrees[:, joint] = np.clip(interpolated_angles, min_val, max_val)
-        
-        return interpolated_degrees
+            interpolated_degrees[:, joint] = np.clip(interpolated_degrees[:, joint], min_val, max_val)
+
+        return interpolated_degrees, interpolated_velocities
 
     def interpolate_circle(self, target, subject):
-        """SLERP 기반 원형 보간"""
-        # 사용자 궤적 시간 정규화
-        target_normalized = self.normalize_time(target, num_points=len(target))
-        subject_normalized = self.normalize_time(subject, num_points=len(target))
+        """쿼터니언 기반 SLERP를 사용한 원형 운동 보간"""
+        aligned_target, aligned_subject = self.normalize_time(target, subject)
+        
+        aligned_target_angles = aligned_target[:, :4]
+        aligned_target_velocities = aligned_target[:, 4:]
+        aligned_subject_angles = aligned_subject[:, :4]
+        aligned_subject_velocities = aligned_subject[:, 4:]
 
-        interpolated_degrees = np.zeros((len(target), 4))
+        n_points = len(aligned_target_angles)
+        interpolated_degrees = np.zeros_like(aligned_target_angles)
+        interpolated_velocities = np.zeros_like(aligned_target_velocities)
+
+        t = np.linspace(0, 1, n_points)
         
-        # 각 관절별 가중치 설정 c (조정 알고리즘 추가해서 적용)
-        joint_weights = {
-            0: np.linspace(0, 0.5, len(target)),  # Joint 1 (deg1)
-            1: np.linspace(0, 0.5, len(target)), # Joint 2 (deg2)
-            2: np.linspace(0, 0.5, len(target)), # Joint 3 (deg3)
-            3: np.linspace(0, 0.5, len(target))  # Joint 4 (deg4)
-        }
+        # 부드러운 원형 운동을 위한 easing function
+        # 기존의 사인 기반 가중치 대신 smooth step function 사용
+        weights = t * t * (3 - 2 * t)  
+
+        from scipy.spatial.transform import Rotation as R
         
+        # 4개 조인트를 한 번에 처리
+        for i in range(n_points):
+            # 타겟과 서브젝트의 각도를 라디안으로 변환
+            target_rad = np.radians(aligned_target_angles[i])
+            subject_rad = np.radians(aligned_subject_angles[i])
+            
+            # 각도를 쿼터니언으로 변환
+            q_target = R.from_euler('xyz', target_rad[:3])  # 처음 3개 각도만 사용
+            q_subject = R.from_euler('xyz', subject_rad[:3])
+            
+            # SLERP 수행
+            q_interp = R.slerp([q_target], [q_subject], weights[i])
+            
+            # 보간된 쿼터니언을 다시 오일러 각도로 변환
+            euler_angles = q_interp.as_euler('xyz', degrees=True)
+            interpolated_degrees[i, :3] = euler_angles
+            
+            # 4번째 조인트는 별도로 선형 보간 (쿼터니언 변환이 불필요한 단일 축 회전)
+            interpolated_degrees[i, 3] = (1 - weights[i]) * aligned_target_angles[i, 3] + \
+                                    weights[i] * aligned_subject_angles[i, 3]
+            
+            # 각속도 보간 - 각운동량 보존을 고려한 보간
+            for j in range(4):
+                # 각속도의 부드러운 전환을 위한 hermite 보간
+                v0 = aligned_target_velocities[i, j]
+                v1 = aligned_subject_velocities[i, j]
+                w = weights[i]
+                
+                # Hermite 보간 공식
+                h00 = 2*w**3 - 3*w**2 + 1
+                h10 = w**3 - 2*w**2 + w
+                h01 = -2*w**3 + 3*w**2
+                h11 = w**3 - w**2
+                
+                interpolated_velocities[i, j] = h00*v0 + h10*0 + h01*v1 + h11*0
+
+        # 관절 제한 적용 (부드러운 제한을 위해 sigmoid 함수 사용)
         for joint in range(4):
-            target_joint = target_normalized[:, joint]
-            subject_joint = subject_normalized[:, joint]
-
-            # 현재 관절에 대한 가중치 가져오기
-            t = joint_weights[joint]
-            
-            # 각도 차이 계산 및 보정
-            angle_diff = subject_joint - target_joint
-            angle_diff = np.where(angle_diff > 180, angle_diff - 360,
-                                np.where(angle_diff < -180, angle_diff + 360, angle_diff))
-            
-            # SLERP 보간
-            omega = np.abs(angle_diff)  # 회전 각도
-
-            for i, weight in enumerate(t):
-                if omega[i] < 1e-6:  # 각도 차이가 매우 작을 경우
-                    interpolated_degrees[i, joint] = target_joint[i] + weight * angle_diff[i]
-                else:
-                    sin_omega = np.sin(np.radians(omega[i]))  # 여기서만 라디안 사용
-                    interpolated_degrees[i, joint] = (
-                        target_joint[i] * np.sin(np.radians((1-weight)*omega[i]))/sin_omega + 
-                        subject_joint[i] * np.sin(np.radians(weight*omega[i]))/sin_omega
-                    )
-            
-            # 관절 제한 적용
             min_val, max_val = self.joint_limits[joint]
-            interpolated_degrees[:, joint] = np.clip(interpolated_degrees[:, joint], 
-                                                min_val, max_val)
-        
-        return interpolated_degrees
+            
+            # Smooth clamping using sigmoid
+            def smooth_clamp(x, min_val, max_val):
+                k = 10  # 시그모이드 기울기 계수
+                x_normalized = (x - min_val) / (max_val - min_val)
+                y_normalized = 1 / (1 + np.exp(-k * (x_normalized - 0.5)))
+                return min_val + y_normalized * (max_val - min_val)
+            
+            interpolated_degrees[:, joint] = smooth_clamp(
+                interpolated_degrees[:, joint], min_val, max_val)
+
+        return interpolated_degrees, interpolated_velocities
 
     def interpolate_trajectory(self, target_df, user_df, trajectory_type):
-        """궤적 타입에 따른 보간 수행"""
-        # 관절 각도 데이터 추출
-        target_degrees = target_df[['deg1', 'deg2', 'deg3', 'deg4']].values
-        user_degrees = user_df[['deg1', 'deg2', 'deg3', 'deg4']].values
+        """궤적 타입에 따른 보간 수행"""        
+        # 각속도 계산 및 DataFrame 생성
+        target_with_vel = target_df.copy()
+        user_with_vel = user_df.copy()
+        
+        # 각속도 계산 추가
+        for df in [target_with_vel, user_with_vel]:
+            df['degsec1'] = np.gradient(df['deg1'])
+            df['degsec2'] = np.gradient(df['deg2'])
+            df['degsec3'] = np.gradient(df['deg3'])
+            df['degsec4'] = np.gradient(df['deg4'])
 
-        # 궤적 타입 분류 및 적절한 보간 방법 선택
-        main_type = self.analyzer.classify_trajectory_type(trajectory_type)
-        if main_type == 'line':
-            aligned_degrees = self.interpolate_line(target_degrees, user_degrees)
-        elif main_type == 'arc':
-            aligned_degrees = self.interpolate_arc(target_degrees, user_degrees)
-        elif main_type == 'circle':
-            aligned_degrees = self.interpolate_circle(target_degrees, user_degrees)
+        # print("Velocities calculated")
+        
+        # 스무딩 적용
+        target_smoothed = self.smooth_data(target_with_vel)
+        user_smoothed = self.smooth_data(user_with_vel)
+
+        # 관절 각도와 각속도 데이터 준비
+        target_angles = target_smoothed[['deg1', 'deg2', 'deg3', 'deg4']].values
+        target_velocities = target_smoothed[['degsec1', 'degsec2', 'degsec3', 'degsec4']].values
+        
+        user_angles = user_smoothed[['deg1', 'deg2', 'deg3', 'deg4']].values
+        user_velocities = user_smoothed[['degsec1', 'degsec2', 'degsec3', 'degsec4']].values
+        
+        target_data = np.column_stack([target_angles, target_velocities])
+        user_data = np.column_stack([user_angles, user_velocities])
+        
+        # 보간 방법 선택 및 적용
+        if 'clock' in trajectory_type.lower():
+            print("Using circle interpolation")
+            aligned_degrees, aligned_velocities = self.interpolate_circle(target_data, user_data)
+        elif 'counter' in trajectory_type.lower():
+            print("Using line interpolation")
+            aligned_degrees, aligned_velocities = self.interpolate_line(target_data, user_data)
         else:
-            raise ValueError(f"Unknown trajectory type: {main_type}")
+            print("Using arc interpolation")
+            aligned_degrees, aligned_velocities = self.interpolate_arc(target_data, user_data)
 
+        # print("Interpolation completed")
+        
         # 보간된 관절 각도로부터 end-effector 위치 계산
-        aligned_points = np.array([calculate_end_effector_position(deg) for deg in aligned_degrees])
-        aligned_points = aligned_points * 1000
+        endeffector_degrees  = aligned_degrees.copy()
+        endeffector_degrees[:, 1] -= 90
+        endeffector_degrees[:, 3] -= 90
 
-        # end-effector 위치 범위 제한
-        for i, col in enumerate(['x_end', 'y_end', 'z_end']):
-            min_val = min(target_df[col].min(), user_df[col].min())
-            max_val = max(target_df[col].max(), user_df[col].max())
-            aligned_points[:, i] = np.clip(aligned_points[:, i], min_val, max_val)
+        aligned_points = np.array([calculate_end_effector_position(deg) for deg in endeffector_degrees])
+        aligned_points = aligned_points * 1000
 
         # 결과 데이터프레임 생성
         generated_df = pd.DataFrame(
             np.column_stack([aligned_points, aligned_degrees]),
             columns=['x_end', 'y_end', 'z_end', 'deg1', 'deg2', 'deg3', 'deg4']
         )
-        
+
         return generated_df
-    
+
     def visualize_trajectories(self, target_df, user_df, generated_df, trajectory_type, generation_number=1):
         """타겟과 사용자 궤적과 생성된 궤적을 시각화"""
-        
-        # 모든 데이터를 최소 길이로 맞춤
-        # min_length = min(len(target_df), len(user_df), len(generated_df))
-        # target_df = target_df.iloc[:min_length].copy()
-        # user_df = user_df.iloc[:min_length].copy()  
-        # generated_df = generated_df.iloc[:min_length].copy()
-        
-        # print(f"Generated: {generated_df.shape}")
-        
-        # # 관절 각도 데이터로 DTW와 보간 수행
+        # 관절 각도 데이터로 DTW와 보간 수행
         target_degrees = target_df[['deg1', 'deg2', 'deg3', 'deg4']].values
         user_degrees = user_df[['deg1', 'deg2', 'deg3', 'deg4']].values
         generated_degrees = generated_df[['deg1', 'deg2', 'deg3', 'deg4']].values
-
-        # 디버깅용
-        # print("\nData verification:")
-        # print(f"Target shape: {target_df.shape}")
-        # print(f"User shape: {user_df.shape}")
-        # print(f"Generated shape: {generated_df.shape}")
-        
-        # 데이터 샘플 확인
-        # print("\nFirst few rows of generated data:")
-        # print(generated_df.head())
-        
-        # 3D 궤적 데이터 범위 확인
-        print("\nRange of end-effector positions:")
-        for df, name in [(target_df, 'Target'), (user_df, 'User'), (generated_df, 'Generated')]:
-            print(f"\n{name}:")
-            for col in ['x_end', 'y_end', 'z_end']:
-                print(f"{col}: {df[col].min():.2f} to {df[col].max():.2f}")
+        target_ends = np.array([calculate_end_effector_position(deg) for deg in target_degrees]) * 1000
+        user_ends = np.array([calculate_end_effector_position(deg) for deg in user_degrees]) * 1000
 
         # 시각화
         fig = plt.figure(figsize=(20, 10))
@@ -292,12 +338,12 @@ class TrajectoryGenerator:
         
         # 3D end-effector 궤적 시각화
         ax_3d = fig.add_subplot(gs[:, 0], projection='3d')
-        ax_3d.plot(target_df['x_end'], target_df['y_end'], target_df['z_end'], 
+        ax_3d.plot(target_ends[:, 0], target_ends[:, 1], target_ends[:, 2], 
                 'b-', label='Target')
-        ax_3d.plot(user_df['x_end'], user_df['y_end'], user_df['z_end'],
+        ax_3d.plot(user_ends[:, 0], user_ends[:, 1], user_ends[:, 2],
                 'r-', label='User')
         ax_3d.plot(generated_df['x_end'], generated_df['y_end'], generated_df['z_end'], 
-                'g-', linewidth=2, label='Generated')
+                'g-', label='Generated')
         
         ax_3d.set_xlabel('X')
         ax_3d.set_ylabel('Y')
@@ -305,7 +351,7 @@ class TrajectoryGenerator:
         ax_3d.set_title('End-Effector Trajectory')
         ax_3d.legend()
 
-        # 관절 각도 그래프
+        # joint 그래프
         target_time = np.arange(len(target_degrees))
         user_time = np.arange(len(user_degrees))
         aligned_time = np.arange(len(generated_degrees))
@@ -349,7 +395,7 @@ class TrajectoryGenerator:
         # 기본 필드 설정
         full_df['r'] = 'm'
         full_df['sequence'] = range(num_points)
-        full_df['timestamp'] = [i * 20 for i in range(num_points)]  # 20ms 간격
+        full_df['timestamp'] = [i * 10 for i in range(num_points)]  # 20ms 간격
         
         # 각도, 엔드이펙터터의 데이터 설정
         full_df['deg'] = (generated_df['deg1'].round(3).astype(str) + '/' + 
@@ -422,5 +468,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-   

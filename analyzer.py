@@ -3,7 +3,7 @@ import random
 import torch
 import numpy as np
 import pandas as pd
-from model import ClassificationDataset
+from dataloader import ClassificationDataset
 from utils import preprocess_trajectory_data
 
 ##################################
@@ -117,7 +117,7 @@ class TrajectoryAnalyzer:
             return 'line'
         elif any(t in trajectory_type for t in ['v_45', 'v_90', 'v_135', 'v_180', 'h_u', 'h_d']):
             return 'arc'
-        elif any(t in trajectory_type for t in ['clock', 'counter']):
+        elif any(t in trajectory_type for t in ['clock_big', 'clock_t', 'clock_m', 'clock_b', 'clock_l', 'clock_r', 'counter_big', 'counter_t', 'counter_m', 'counter_b', 'counter_l', 'counter_r']):
             return 'circle'
         else:
             raise ValueError(f"Unknown trajectory type: {trajectory_type}")
