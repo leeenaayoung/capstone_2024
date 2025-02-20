@@ -19,9 +19,11 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
         'r', 'sequence', 'timestamp', 'deg', 'deg/sec', 'mA',
         'endpoint', 'grip/rotation', 'torque', 'force', 'ori', '#'
     ])
-    
+
     # 필터링: r != 's'
     df_t = df_t[df_t['r'] != 's']
+    # print("Columns in input DataFrame:", df_t.columns.tolist())
+
     data_v = df_t.drop(['r', 'grip/rotation', '#'], axis=1)
     
     # 각 컬럼 split 처리
@@ -71,9 +73,6 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
     
     return data_v
 
-##################################
-# degree값 받아서 end_effector 계산
-##################################
 def calculate_end_effector_position(degrees):
     """ degree값을 기준으로 endeffector 계산 """
     q = np.radians(degrees)
