@@ -98,16 +98,16 @@ def get_unique_labels(base_path):
     return sorted(list(set(tmp_dataset.labels)))
 
 # 기존
-# def collate_fn(batch, dataset):
-#     global unique_labels  
-#     data_list = [item[0] for item in batch]
-#     label_list = [item[1] for item in batch]
+def collate_fn(batch, dataset):
+    global unique_labels  
+    data_list = [item[0] for item in batch]
+    label_list = [item[1] for item in batch]
 
-#     data_padded = pad_sequence(data_list, batch_first=True, padding_value=0)
-#     label_indices = [dataset.unique_labels.index(lbl) for lbl in label_list]
-#     label_indices = torch.tensor(label_indices, dtype=torch.long)
+    data_padded = pad_sequence(data_list, batch_first=True, padding_value=0)
+    label_indices = [dataset.unique_labels.index(lbl) for lbl in label_list]
+    label_indices = torch.tensor(label_indices, dtype=torch.long)
 
-#     return data_padded, label_indices
+    return data_padded, label_indices
 
 ##########################
 # 분류 모델 정의
