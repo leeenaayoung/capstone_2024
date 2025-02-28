@@ -5,7 +5,6 @@ import torch
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
-from scipy.ndimage import gaussian_filter1d
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
 from sklearn.preprocessing import StandardScaler
@@ -20,9 +19,11 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
         'r', 'sequence', 'timestamp', 'deg', 'deg/sec', 'mA',
         'endpoint', 'grip/rotation', 'torque', 'force', 'ori', '#'
     ])
-    
+
     # 필터링: r != 's'
     df_t = df_t[df_t['r'] != 's']
+    # print("Columns in input DataFrame:", df_t.columns.tolist())
+
     data_v = df_t.drop(['r', 'grip/rotation', '#'], axis=1)
     
     # 각 컬럼 split 처리
@@ -46,6 +47,10 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
     # 숫자 변환
     data_v = data_v.apply(pd.to_numeric, errors='coerce').fillna(0)
     
+    # deg2와 deg4에서 90도 빼기
+    data_v['deg2'] = data_v['deg2'] - 90
+    data_v['deg4'] = data_v['deg4'] - 90
+    
     # time 열 생성
     data_v['time'] = data_v['timestamp'] - data_v['sequence'] - 1
     data_v = data_v.drop(['sequence', 'timestamp'], axis=1)
@@ -68,9 +73,6 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
     
     return data_v
 
-##################################
-# degree값 받아서 end_effector 계산
-##################################
 def calculate_end_effector_position(degrees):
     """ degree값을 기준으로 endeffector 계산 """
     q = np.radians(degrees)
@@ -83,3 +85,5 @@ def calculate_end_effector_position(degrees):
     z = (37 * np.sin(q[1])) / 100 + (8 * np.cos(q[3]) * (np.cos(q[1]) * np.sin(q[2]) + \
         np.cos(q[2]) * np.sin(q[1]))) / 25
     return np.array([x, y, z])
+
+    

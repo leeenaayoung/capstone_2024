@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, random_split
-# from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from functools import partial
 from model import TransformerModel, initialize_weights
 from sklearn.preprocessing import StandardScaler
@@ -111,7 +111,8 @@ def train_classification(model, train_loader, val_loader, criterion, optimizer, 
 ######################
 # 단일 궤적 예측(분류 모델 테스트)
 ######################
-def load_and_preprocess_trajectory(file_path, imported_scaler=None):
+def load_and_preprocess_trajectory(file_path, scaler=None):
+
     with open(file_path, 'r') as f:
         reader = csv.reader(f)
         data_list = list(reader)
@@ -121,67 +122,49 @@ def load_and_preprocess_trajectory(file_path, imported_scaler=None):
         'endpoint', 'grip/rotation', 'torque', 'force', 'ori', '#'
     ])
 
-    # 필터링
+     # 필터링: r != 's'
     df_t = df_t[df_t['r'] != 's']
     data_v = df_t.drop(['r', 'grip/rotation', '#'], axis=1)
-
-    # endpoint
-    v_split = data_v['endpoint'].astype(str).str.split('/')
-    data_v['x_end'] = v_split.str.get(0)
-    data_v['y_end'] = v_split.str.get(1)
-    data_v['z_end'] = v_split.str.get(2)
-
-    # deg
-    v_split = data_v['deg'].astype(str).str.split('/')
-    data_v['deg1'] = v_split.str.get(0)
-    data_v['deg2'] = v_split.str.get(1)
-    data_v['deg3'] = v_split.str.get(2)
-    data_v['deg4'] = v_split.str.get(3)
-
-    # deg/sec
-    v_split = data_v['deg/sec'].astype(str).str.split('/')
-    data_v['degsec1'] = v_split.str.get(0)
-    data_v['degsec2'] = v_split.str.get(1)
-    data_v['degsec3'] = v_split.str.get(2)
-    data_v['degsec4'] = v_split.str.get(3)
-
-    # torque
-    v_split = data_v['torque'].astype(str).str.split('/')
-    data_v['torque1'] = v_split.str.get(0)
-    data_v['torque2'] = v_split.str.get(1)
-    data_v['torque3'] = v_split.str.get(2)
-
-    # force
-    v_split = data_v['force'].astype(str).str.split('/')
-    data_v['force1'] = v_split.str.get(0)
-    data_v['force2'] = v_split.str.get(1)
-    data_v['force3'] = v_split.str.get(2)
-
-    # ori
-    v_split = data_v['ori'].astype(str).str.split('/')
-    data_v['yaw'] = v_split.str.get(0)
-    data_v['pitch'] = v_split.str.get(1)
-    data_v['roll'] = v_split.str.get(2)
-
-    # 제거
+    
+    # 각 컬럼 split 처리
+    splits = {
+        'endpoint': ['x_end', 'y_end', 'z_end'],
+        'deg': ['deg1', 'deg2', 'deg3', 'deg4'],
+        'deg/sec': ['degsec1', 'degsec2', 'degsec3', 'degsec4'],
+        'torque': ['torque1', 'torque2', 'torque3'],
+        'force': ['force1', 'force2', 'force3'],
+        'ori': ['yaw', 'pitch', 'roll']
+    }
+    
+    for col, new_cols in splits.items():
+        v_split = data_v[col].astype(str).str.split('/')
+        for idx, new_col in enumerate(new_cols):
+            data_v[new_col] = v_split.str.get(idx)
+    
+    # 원본 컬럼 제거
     data_v = data_v.drop(['deg', 'deg/sec', 'mA', 'endpoint', 'torque', 'force', 'ori'], axis=1)
-
+    
     # 숫자 변환
     data_v = data_v.apply(pd.to_numeric, errors='coerce').fillna(0)
-
-    # 'time' 열
+    
+    # deg2와 deg4에서 90도 빼기
+    data_v['deg2'] = data_v['deg2'] - 90
+    data_v['deg4'] = data_v['deg4'] - 90
+    
+    # time 열 생성
     data_v['time'] = data_v['timestamp'] - data_v['sequence'] - 1
     data_v = data_v.drop(['sequence', 'timestamp'], axis=1)
-
-    # 시간 정렬
-    data_v.sort_values(by=['time'], ascending=True, inplace=True)
+    
+    # 시간 기준 정렬
+    data_v.sort_values(by=["time"], ascending=True, inplace=True)
     data_v.reset_index(drop=True, inplace=True)
 
     # 스케일러 적용
-    if imported_scaler is not None:
-        arr_scaled = imported_scaler.transform(data_v.values)
+    if scaler is not None:
+        arr_scaled = scaler.transform(data_v.values)
     else:
         arr_scaled = scaler.fit_transform(data_v.values)
+        
     return torch.tensor(arr_scaled, dtype=torch.float32)
 
 ##########################
@@ -236,7 +219,7 @@ def main():
     # 8) 베스트 모델 로드 후 테스트
     best_model = TransformerModel(input_dim, d_model, nhead, num_layers, num_classes).to(device)
     best_model.load_state_dict(
-    torch.load('best_classification_model.pth', map_location=torch.device('cpu'))
+    torch.load('best_classification_model.pth', map_location=torch.device('cpu'), weights_only=True)
     )
     # 테스트
     # test_classification(best_model, classification_test_loader)
@@ -253,7 +236,8 @@ def main():
         test_file_path = os.path.join(non_golden_dir, selected_file)
 
         best_model.eval()
-        single_data = load_and_preprocess_trajectory(test_file_path, imported_scaler=c_dataset.scaler).unsqueeze(0).to(device)
+
+        single_data = load_and_preprocess_trajectory(test_file_path, scaler=c_dataset.scaler).unsqueeze(0).to(device)
         with torch.no_grad():
             out = best_model(single_data)
             _, pred_idx = torch.max(out, 1)

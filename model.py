@@ -1,20 +1,20 @@
 import os
-import csv
 import random
+import csv
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import pad_sequence
 from sklearn.preprocessing import StandardScaler, LabelEncoder
+from torch.utils.data import DataLoader, Dataset
 from torch import optim
 from tqdm import tqdm
 from scipy.spatial.distance import euclidean
 from fastdtw import fastdtw
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
+from torch.nn.utils.rnn import pad_sequence
 from sklearn.preprocessing import MinMaxScaler
-from torch.utils.data import Dataset
 from utils import preprocess_trajectory_data
 
 ##########################
@@ -42,9 +42,9 @@ def initialize_weights(m):
         if m.bias is not None:
             torch.nn.init.zeros_(m.bias)
 
-##########################
-# 데이터셋 로드
-##########################
+# ##########################
+# # 데이터셋 로드
+# ##########################
 class ClassificationDataset(Dataset):
     def __init__(self, base_path):
         self.data_cache = {}
@@ -73,7 +73,7 @@ class ClassificationDataset(Dataset):
         for file_name in sorted(os.listdir(base_path)):
             if file_name.endswith('.txt'):
                 # 파일명에서 라벨 추출 (두 번째 언더바 전까지)
-                label = '_'.join(file_name.split('_')[:2])  # 첫 번째와 두 번째 부분만 가져옴
+                label = '_'.join(file_name.split('_')[:2])  
                 
                 file_path = os.path.join(base_path, file_name)
                 with open(file_path, 'r') as f:
