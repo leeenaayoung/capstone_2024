@@ -22,8 +22,6 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
 
     # 필터링: r != 's'
     df_t = df_t[df_t['r'] != 's']
-    # print("Columns in input DataFrame:", df_t.columns.tolist())
-
     data_v = df_t.drop(['r', 'grip/rotation', '#'], axis=1)
     
     # 각 컬럼 split 처리
