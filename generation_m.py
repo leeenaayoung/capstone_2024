@@ -599,7 +599,7 @@ class ModelBasedTrajectoryGenerator:
             ax.plot(aligned_time, generated_df[joint], 'g-', label='interpolate')
             
             ax.set_title(joint_titles[idx])
-            ax.set_xlabel('timestampe')
+            ax.set_xlabel('timestamp')
             ax.set_ylabel('deg')
             ax.grid(True)
             ax.legend()
