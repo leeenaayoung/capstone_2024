@@ -1,18 +1,12 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import torch
-from fastdtw import fastdtw
-from scipy.interpolate import CubicSpline
-from scipy.spatial.distance import euclidean
 import os
 import random
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from analyzer import TrajectoryAnalyzer
-from utils import calculate_end_effector_position
-from generation_m import ModelBasedTrajectoryGenerator
 
 class JointAttention(nn.Module):
     """관절 간의 관계를 학습하는 Self-Attention 모듈"""
@@ -114,18 +108,18 @@ class TrajectoryDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
     
-class GeneraionModelTraining:
+class ModelTrainer:
     """모델 훈련 전용 클래스"""
-    def __init__(self, base_dir=None):
+    def __init__(self, base_dir=None, model_save_path=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.base_dir = base_dir or os.path.join(os.getcwd(), "data")
-        self.model_path = os.path.join(os.getcwd(), "joint_relationship_model.pth")
+        self.model_path = model_save_path or os.path.join(os.getcwd(), "models", "joint_relationship_model.pth")
+        
+        # 모델 디렉토리 생성
+        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
         
         # 모델 초기화
         self.model = JointTrajectoryTransformer().to(self.device)
-        
-        # 디렉토리 생성
-        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
         
         # 분석기 초기화
         try:
@@ -134,32 +128,33 @@ class GeneraionModelTraining:
                 base_dir=self.base_dir
             )
         except Exception as e:
-            print(f"Error initializing analyzer: {str(e)}")
+            print(f"분석기 초기화 오류: {str(e)}")
             self.analyzer = None
     
-    def collect_training_data(self, n_samples=100):
+    def collect_training_data(self, data_dir=None, n_samples=100):
         """학습 데이터 수집"""
         if self.analyzer is None:
-            print("Analyzer not initialized. Cannot collect training data.")
+            print("분석기가 초기화되지 않았습니다. 학습 데이터를 수집할 수 없습니다.")
             return []
             
-        data_dir = os.path.join(self.base_dir, "all_data")
+        # 데이터 디렉토리 설정
+        base_dir = data_dir or os.path.join(self.base_dir, "all_data")
         trajectories = []
         
         try:
-            trajectory_files = [f for f in os.listdir(data_dir) if f.endswith('.txt')]
+            trajectory_files = [f for f in os.listdir(base_dir) if f.endswith('.txt')]
             
             if len(trajectory_files) > n_samples:
                 trajectory_files = random.sample(trajectory_files, n_samples)
             
-            print(f"Collecting data from {len(trajectory_files)} trajectory files...")
+            print(f"총 {len(trajectory_files)}개의 궤적 파일에서 데이터 수집 중...")
             
-            for file_name in tqdm(trajectory_files, desc="Loading files"):
-                file_path = os.path.join(data_dir, file_name)
+            for file_name in tqdm(trajectory_files, desc="파일 로드 중"):
+                file_path = os.path.join(base_dir, file_name)
                 
                 # 궤적 유형 추출
                 trajectory_type = None
-                for type_name in ['d_', 'clock_', 'counter_', 'v_', 'h_']:
+                for type_name in ['d_', 'clock', 'countere', 'v_s', 'h_']:
                     if type_name in file_name.lower():
                         trajectory_type = type_name
                         break
@@ -176,15 +171,17 @@ class GeneraionModelTraining:
                         if len(angles) >= 30:
                             trajectories.append(angles)
                     except Exception as e:
-                        print(f"Error processing file {file_name}: {str(e)}")
+                        print(f"파일 {file_name} 처리 중 오류 발생: {str(e)}")
             
-            print(f"Total {len(trajectories)} trajectory data collected")
+            print(f"총 {len(trajectories)}개의 궤적 데이터 수집 완료")
 
-            lengths = [len(traj) for traj in trajectories]
-            print(f"Trajectory lengths - Min: {min(lengths)}, Max: {max(lengths)}, Mean: {np.mean(lengths):.2f}")
+            # 데이터 통계 출력
+            if trajectories:
+                lengths = [len(traj) for traj in trajectories]
+                print(f"궤적 길이 - 최소: {min(lengths)}, 최대: {max(lengths)}, 평균: {np.mean(lengths):.2f}")
     
         except Exception as e:
-            print(f"Error during data collection: {str(e)}")
+            print(f"데이터 수집 중 오류 발생: {str(e)}")
         
         return trajectories
     
@@ -195,7 +192,7 @@ class GeneraionModelTraining:
             trajectories = self.collect_training_data()
             
         if not trajectories:
-            print("No training data available. Skipping model training.")
+            print("학습 데이터가 없습니다. 모델 학습을 건너뜁니다.")
             return False
         
         def collate_fn(batch):
@@ -214,7 +211,7 @@ class GeneraionModelTraining:
                 padded_batch.append(padded_seq)
             
             return torch.stack(padded_batch)
-    
+            
         # 데이터셋 및 데이터로더 생성
         dataset = TrajectoryDataset(trajectories)
         train_loader = DataLoader(
@@ -231,8 +228,8 @@ class GeneraionModelTraining:
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         
         # 학습 루프
-        print(f"Starting joint relationship model training on {len(trajectories)} trajectories...")
-        for epoch in tqdm(range(epochs), desc="Training progress"):
+        print(f"관절 관계 모델 학습 시작 (총 {len(trajectories)}개 궤적)...")
+        for epoch in tqdm(range(epochs), desc="학습 진행 상황"):
             total_loss = 0.0
             
             for batch in train_loader:
@@ -252,7 +249,7 @@ class GeneraionModelTraining:
                 total_loss += loss.item()
             
             # 에포크별 평균 손실 출력
-            print(f'Epoch [{epoch+1}/{epochs}], Avg Loss: {total_loss/len(train_loader):.4f}')
+            print(f'Epoch [{epoch+1}/{epochs}], 평균 손실: {total_loss/len(train_loader):.4f}')
             
         # 학습 후, 모델 저장
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
@@ -260,38 +257,9 @@ class GeneraionModelTraining:
             'model_state_dict': self.model.state_dict()
         }, self.model_path)
         
-        print("Model training completed and saved.")
-        print(f"Model saved to: {self.model_path}")
+        print("모델 학습 완료 및 저장됨.")
+        print(f"모델 저장 위치: {self.model_path}")
         
         # 모델을 다시 평가 모드로 설정
         self.model.eval()
         return True
-
-def main():
-    """모델 훈련 메인 함수"""
-    try:
-        # 트레이너 객체 생성
-        print("\nInitializing model trainer...")
-        trainer = GeneraionModelTraining()
-        
-        # 데이터 수집 및 모델 학습
-        print("\nCollecting training data...")
-        trajectories = trainer.collect_training_data(n_samples=200)  # 더 많은 샘플로 학습
-        
-        if not trajectories or len(trajectories) == 0:
-            raise ValueError("No training data collected. Check your data directory structure.")
-        
-        print("\nStarting model training...")
-        success = trainer.train_model(trajectories=trajectories, epochs=100, batch_size=32)
-        
-        if success:
-            print("\nModel training completed successfully!")
-        else:
-            print("\nModel training failed.")
-        
-    except Exception as e:
-        print(f"\nError occurred: {str(e)}")
-        print("Check your data directory structure and paths.")
-
-if __name__ == "__main__":
-    main()

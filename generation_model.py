@@ -1,4 +1,5 @@
 import torch
+from tqdm import tqdm
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
@@ -14,12 +15,10 @@ class JointAttention(nn.Module):
         self.value = nn.Linear(d_model, d_model)
         
     def forward(self, x):
-        # x shape: (batch_size, seq_len, d_model)
         Q = self.query(x)
         K = self.key(x)
         V = self.value(x)
         
-        # Scaled dot-product attention
         scores = torch.matmul(Q, K.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.d_model).float())
         attention = torch.softmax(scores, dim=-1)
         
@@ -150,18 +149,6 @@ def train_trajectory_model(
     learning_rate=0.001, 
     device=None
 ):
-    """
-    궤적 생성 모델 학습
-    
-    Args:
-        model (nn.Module): 학습할 모델
-        train_loader (DataLoader): 학습 데이터 로더
-        epochs (int): 학습 에포크 수
-        learning_rate (float): 학습률
-        device (torch.device, optional): 학습에 사용할 장치
-    """
-    from tqdm import tqdm
-    
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     

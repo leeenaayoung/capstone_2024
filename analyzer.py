@@ -121,3 +121,4 @@ class TrajectoryAnalyzer:
             return 'circle'
         else:
             raise ValueError(f"Unknown trajectory type: {trajectory_type}")
+    

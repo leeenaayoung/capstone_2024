@@ -7,10 +7,111 @@ from scipy.interpolate import CubicSpline
 from scipy.spatial.distance import euclidean
 import os
 import random
-from torch import nn
+from torch import nn, optim
+from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 from analyzer import TrajectoryAnalyzer
 from utils import calculate_end_effector_position
-from generation_m_model import JointTrajectoryTransformer
+
+class JointAttention(nn.Module):
+    """관절 간의 관계를 학습하는 Self-Attention 모듈"""
+    def __init__(self, d_model):
+        super().__init__()
+        self.d_model = d_model
+        self.query = nn.Linear(d_model, d_model)
+        self.key = nn.Linear(d_model, d_model)
+        self.value = nn.Linear(d_model, d_model)
+        
+    def forward(self, x):
+        Q = self.query(x)
+        K = self.key(x)
+        V = self.value(x)
+        
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.d_model).float())
+        attention = torch.softmax(scores, dim=-1)
+        
+        return torch.matmul(attention, V)
+    
+class PositionalEncoding(nn.Module):
+    """시간 정보를 인코딩"""
+    def __init__(self, d_model, max_seq_length=5000):
+        super().__init__()
+        pe = torch.zeros(max_seq_length, d_model)
+        position = torch.arange(0, max_seq_length, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        self.register_buffer('pe', pe.unsqueeze(0))
+        
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+    
+class JointTrajectoryTransformer(nn.Module):
+    """관절 간 상관관계를 학습하는 트랜스포머 모델"""
+    def __init__(self, n_joints=4, d_model=64, n_head=4, n_layers=3, dropout=0.1):
+        super().__init__()
+        
+        self.joint_embedding = nn.Linear(n_joints, d_model)
+        self.positional_encoding = PositionalEncoding(d_model)
+        
+        # 입력 레이어
+        self.input_norm = nn.LayerNorm(d_model)
+        self.input_dropout = nn.Dropout(dropout)
+
+        self.joint_attention_layers = nn.ModuleList([
+            JointAttention(d_model) for _ in range(n_layers)
+        ])
+        
+        transformer_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_head,
+            dim_feedforward=d_model*4,
+            dropout=dropout
+        )
+        self.transformer = nn.TransformerEncoder(
+            transformer_layer,
+            num_layers=n_layers
+        )
+        
+        # 출력 레이어
+        self.output_layer = nn.Sequential(
+            nn.Linear(d_model, d_model//2),
+            nn.ReLU(),
+            nn.Linear(d_model//2, n_joints)
+        )
+        
+    def forward(self, x):
+        x = self.joint_embedding(x)
+        x = self.positional_encoding(x)
+        x = self.input_norm(x)
+        x = self.input_dropout(x)
+
+        joint_features = x
+        for attention_layer in self.joint_attention_layers:
+            joint_attention = attention_layer(joint_features)
+            joint_features = joint_features + joint_attention
+
+        x = joint_features.transpose(0, 1)
+        x = self.transformer(x)
+        x = x.transpose(0, 1)
+        
+        # 출력 생성
+        output = self.output_layer(x)
+        
+        return output
+
+class TrajectoryDataset(Dataset):
+    """궤적 데이터셋 클래스"""
+    def __init__(self, trajectories):
+        self.data = [torch.FloatTensor(traj) for traj in trajectories]
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        return self.data[idx]
 
 class ModelBasedTrajectoryGenerator:
     """모델 기반 궤적 생성기 클래스"""
@@ -21,15 +122,6 @@ class ModelBasedTrajectoryGenerator:
         # 관절 상관 관계 모델 초기화
         self.model = JointTrajectoryTransformer().to(self.device)
         
-        # 모델 로드 (모델 경로가 제공된 경우)
-        if model_path and os.path.exists(model_path):
-            try:
-                checkpoint = torch.load(model_path, map_location=self.device)
-                self.model.load_state_dict(checkpoint['model_state_dict'])
-                print(f"Model loaded from {model_path}")
-            except Exception as e:
-                print(f"Error loading model: {str(e)}")
-        
         # 관절 제한 설정
         self.joint_limits = {   
             0: (-10, 110),
@@ -39,6 +131,107 @@ class ModelBasedTrajectoryGenerator:
         }
         
         # 기본적으로 모델을 평가 모드로 설정
+        self.model.eval()
+    
+    def collect_training_data(self, data_dir=None, n_samples=100):
+        """ 학습 데이터 수집 """
+        base_dir = data_dir or os.path.join(self.analyzer.base_dir, "golden_sample")
+        trajectories = []
+        
+        try:
+            trajectory_files = [f for f in os.listdir(base_dir) if f.endswith('.txt')]
+            
+            if len(trajectory_files) > n_samples:
+                trajectory_files = random.sample(trajectory_files, n_samples)
+            
+            print(f"총 {len(trajectory_files)}개의 궤적 파일에서 데이터 수집 중...")
+            
+            for file_name in tqdm(trajectory_files, desc="파일 로드 중"):
+                file_path = os.path.join(base_dir, file_name)
+                
+                # 궤적 유형 추출
+                trajectory_type = None
+                for type_name in ['line', 'clockwise', 'counter_clockwise', 'v_shape', 'h_shape']:
+                    if type_name in file_name.lower():
+                        trajectory_type = type_name
+                        break
+                
+                if trajectory_type:
+                    try:
+                        # TrajectoryAnalyzer에서 궤적 로드
+                        df, _ = self.analyzer.load_target_trajectory(trajectory_type)
+                        
+                        # 각도 데이터 추출
+                        angles = df[['deg1', 'deg2', 'deg3', 'deg4']].values
+                        
+                        # 궤적이 너무 짧지 않은 경우에만 추가
+                        if len(angles) >= 30:
+                            trajectories.append(angles)
+                    except Exception as e:
+                        print(f"파일 {file_name} 처리 중 오류 발생: {str(e)}")
+            
+            print(f"총 {len(trajectories)}개의 궤적 데이터 수집 완료")
+            
+        except Exception as e:
+            print(f"데이터 수집 중 오류 발생: {str(e)}")
+        
+        return trajectories
+    
+    def train_model(self, trajectories=None, epochs=100, batch_size=32, learning_rate=0.001):
+        """ 관절 관계 모델 학습 """
+        # 데이터가 제공되지 않은 경우 자동 수집
+        if trajectories is None:
+            trajectories = self.collect_training_data()
+            
+        if not trajectories:
+            print("학습 데이터가 없습니다. 모델 학습을 건너뜁니다.")
+            return
+            
+        # 데이터셋 및 데이터로더 생성
+        dataset = TrajectoryDataset(trajectories)
+        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        
+        # 모델을 학습 모드로 설정
+        self.model.train()
+        
+        # 손실 함수 및 옵티마이저 설정
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        
+        # 학습 루프
+        print(f"관절 관계 모델 학습 시작 (총 {len(trajectories)}개 궤적)...")
+        for epoch in tqdm(range(epochs), desc="학습 진행 상황"):
+            total_loss = 0.0
+            
+            for batch in train_loader:
+                batch = batch.to(self.device)
+                
+                # 순전파
+                optimizer.zero_grad()
+                output = self.model(batch)
+                
+                # 손실 계산 - 관절 간 관계를 학습하기 위해 원본 궤적을 예측하도록 학습
+                loss = criterion(output, batch)
+                
+                # 역전파 및 최적화
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+            
+            # 에포크별 평균 손실 출력
+            print(f'Epoch [{epoch+1}/{epochs}], 평균 손실: {total_loss/len(train_loader):.4f}')
+            
+        # 학습 후, 모델 저장
+        model_dir = os.path.join(os.getcwd(), "models")
+        os.makedirs(model_dir, exist_ok=True)
+        torch.save({
+            'model_state_dict': self.model.state_dict()
+        }, os.path.join(model_dir, 'joint_relationship_model.pth'))
+        
+        print("모델 학습 완료 및 저장됨.")
+        
+        # 모델을 다시 평가 모드로 설정
         self.model.eval()
     
     def smooth_data(self, data, R=0.02, Q=0.1):
@@ -587,7 +780,7 @@ class ModelBasedTrajectoryGenerator:
         target_time = np.arange(len(target_degrees))
         user_time = np.arange(len(user_degrees))
         aligned_time = np.arange(len(generated_degrees))
-        joint_titles = ['deg1', 'deg2', 'deg3', 'deg4']
+        joint_titles = ['deg1', 'deg2', 'deg3', '4']
         for idx, joint in enumerate(['deg1', 'deg2', 'deg3', 'deg4']):
             row = idx // 2
             col = (idx % 2) + 1
@@ -735,3 +928,64 @@ class ModelBasedTrajectoryGenerator:
         print("\n가장 강한 관절 간 상관관계 (상위 3개):")
         for i, (joint1, joint2, strength) in enumerate(strongest_pairs[:3]):
             print(f"{i+1}. {joint_names[joint1]} ↔ {joint_names[joint2]}: {strength:.4f}")
+
+def main():
+    """메인 함수 - 데이터셋 학습 및 궤적 생성 실행"""
+    base_dir = os.path.join(os.getcwd(), "data")
+    model_path = os.path.join(os.getcwd(), "models", "joint_relationship_model.pth")
+    
+    try:
+        # 객체 초기화
+        print("\n궤적 분석기 및 생성기 초기화 중...")
+        analyzer = TrajectoryAnalyzer(
+            classification_model="best_classification_model.pth",
+            base_dir=base_dir
+        )
+        generator = ModelBasedTrajectoryGenerator(analyzer, model_path)
+        
+        # 사용자 궤적 파일 로드
+        print("\n사용자 궤적 로드 및 분류 중...")
+        non_golden_dir = os.path.join(base_dir, "non_golden_sample")
+        non_golden_files = [f for f in os.listdir(non_golden_dir) if f.endswith('.txt')]
+        
+        if not non_golden_files:
+            raise ValueError("non_golden_sample 디렉토리에 궤적 파일이 없습니다.")
+        
+        selected_file = random.choice(non_golden_files)
+        print(f"선택된 사용자 궤적: {selected_file}")
+        
+        file_path = os.path.join(non_golden_dir, selected_file)
+
+        # 궤적 로드 및 분류
+        user_trajectory, trajectory_type = analyzer.load_user_trajectory(file_path)
+        target_trajectory, _ = analyzer.load_target_trajectory(trajectory_type)
+        
+        # 관절 간 상관관계 분석
+        print("\n관절 간 상관관계 분석 중...")
+        generator.analyze_joint_relationships()
+        
+        # 모델 기반 궤적 생성
+        print("\n모델 기반 궤적 생성 중...")
+        generated_df = generator.interpolate_trajectory(
+            target_df=target_trajectory,
+            user_df=user_trajectory,
+            trajectory_type=trajectory_type
+        )
+
+        # 시각화 및 저장
+        print("\n궤적 시각화 및 저장 중...")
+        generator.visualize_trajectories(
+            target_df=target_trajectory,
+            user_df=user_trajectory,
+            generated_df=generated_df,
+            trajectory_type=trajectory_type
+        )
+        
+        print("\n처리 완료!")
+        
+    except Exception as e:
+        print(f"\n오류 발생: {str(e)}")
+        print("데이터 디렉토리 구조와 모델 경로를 확인하세요.")
+
+if __name__ == "__main__":
+    main()
