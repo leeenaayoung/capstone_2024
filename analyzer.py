@@ -37,7 +37,7 @@ class TrajectoryAnalyzer:
             ).to(self.device)
 
             # 저장된 state_dict 로드
-            state_dict = torch.load(model_path, map_location=self.device)
+            state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
             print("state_dict keys:", state_dict.keys())
             
             # 가중치를 모델에 적용
@@ -80,30 +80,66 @@ class TrajectoryAnalyzer:
         except Exception as e:
             print(f"Trajectory file {file_path} error during processing: {str(e)}")
             raise
-
-    def load_target_trajectory(self, trajectory_type: str):
+    
+    # 타겟 궤적 하나로 수정
+    def load_target_trajectory(self, trajectory_type: str, user_df=None):
         """ user_trajectory와 같은 타입의 target_trajectory 로드"""
         try:
             matching_files = [f for f in os.listdir(self.golden_dir) 
                             if f.startswith(trajectory_type) and f.endswith('.txt')]
             
             if not matching_files:
+                # 매칭되는 파일이 없으면 오류 발생
                 raise ValueError(f"From the golden_sample directory {trajectory_type} can't find the trajectory of the type")
             
-            # 매칭되는 파일들 중 하나를 무작위로 선택(타겟 궤적 하나로 수정)
-            selected_file = random.choice(matching_files)
+            # 무작위 선택 대신 사용자 궤적의 분류 결과와 동일한 이름의 파일 선택
+            if len(matching_files) == 1:
+                selected_file = matching_files[0]
+            else:
+                # 여러 파일이 있는 경우, 파일명에 trajectory_type이 정확히 포함된 것을 우선 선택
+                exact_matches = [f for f in matching_files if f.startswith(f"{trajectory_type}_")]
+                if exact_matches:
+                    selected_file = exact_matches[0]
+                else:
+                    # 정확한 매치가 없으면 첫 번째 파일 선택
+                    selected_file = matching_files[0]
+            
             file_path = os.path.join(self.golden_dir, selected_file)
+            print(f"Using target trajectory: {selected_file}")
             
             # 선택된 파일 로드 및 전처리
             df = pd.read_csv(file_path, delimiter=',')
             _, preprocessed_df = preprocess_trajectory_data(df, scaler=self.c_dataset.scaler, return_raw=True)
-
             
             return preprocessed_df, selected_file
             
         except Exception as e:
             print(f"Error loading target trajectory: {str(e)}")
             raise
+    # 기존
+    # def load_target_trajectory(self, trajectory_type: str):
+    #     """ user_trajectory와 같은 타입의 target_trajectory 로드"""
+    #     try:
+    #         matching_files = [f for f in os.listdir(self.golden_dir) 
+    #                         if f.startswith(trajectory_type) and f.endswith('.txt')]
+            
+    #         if not matching_files:
+    #             raise ValueError(f"From the golden_sample directory {trajectory_type} can't find the trajectory of the type")
+            
+    #         # 매칭되는 파일들 중 하나를 무작위로 선택(타겟 궤적 하나로 수정)
+    #         selected_file = random.choice(matching_files)
+    #         file_path = os.path.join(self.golden_dir, selected_file)
+            
+    #         # 선택된 파일 로드 및 전처리
+    #         df = pd.read_csv(file_path, delimiter=',')
+    #         _, preprocessed_df = preprocess_trajectory_data(df, scaler=self.c_dataset.scaler, return_raw=True)
+
+            
+    #         return preprocessed_df, selected_file
+            
+    #     except Exception as e:
+    #         print(f"Error loading target trajectory: {str(e)}")
+    #         raise
 
     def validate_input(df):
         if len(df) < 3:
