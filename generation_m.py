@@ -1,3 +1,5 @@
+import os
+import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -5,8 +7,6 @@ import torch
 from fastdtw import fastdtw
 from scipy.interpolate import CubicSpline
 from scipy.spatial.distance import euclidean
-import os
-import random
 from torch import nn
 from analyzer import TrajectoryAnalyzer
 from utils import calculate_end_effector_position
@@ -24,7 +24,7 @@ class ModelBasedTrajectoryGenerator:
         # 모델 로드 (모델 경로가 제공된 경우)
         if model_path and os.path.exists(model_path):
             try:
-                checkpoint = torch.load(model_path, map_location=self.device)
+                checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
                 self.model.load_state_dict(checkpoint['model_state_dict'])
                 print(f"Model loaded from {model_path}")
             except Exception as e:
@@ -37,8 +37,7 @@ class ModelBasedTrajectoryGenerator:
             2: (0, 150),     
             3: (-90, 90)     
         }
-        
-        # 기본적으로 모델을 평가 모드로 설정
+
         self.model.eval()
     
     def smooth_data(self, data, R=0.02, Q=0.1):
@@ -225,9 +224,8 @@ class ModelBasedTrajectoryGenerator:
         t = np.linspace(0, 1, n_points)
         interpolation_weight = 0.5  # 기본 보간 가중치
         
-        # 1단계: 기본 Cubic Spline 보간 수행
+        # 기본 Cubic Spline 보간 수행
         for joint in range(4):
-            # 먼저 기본 선형 보간 계산 (나중에 경계로 사용)
             for i in range(n_points):
                 # 각 시점의 선형 보간된 값 (경계 역할)
                 lower_bound = min(aligned_target_angles[i, joint], aligned_subject_angles[i, joint])
@@ -242,7 +240,6 @@ class ModelBasedTrajectoryGenerator:
                 control_velocities = np.zeros(len(control_indices))
                 
                 for i, idx in enumerate(control_indices):
-                    # 제어점도 항상 두 궤적 사이에 있도록 보장
                     target_val = aligned_target_angles[idx, joint]
                     subject_val = aligned_subject_angles[idx, joint]
                     ctrl_lower = min(target_val, subject_val)
@@ -274,7 +271,7 @@ class ModelBasedTrajectoryGenerator:
                     vel_val = cs_vel(t[i])
                     interpolated_velocities[i, joint] = vel_val
         
-        # 2단계: 모델 기반 관절 간 상호작용 적용
+        # 모델 기반 관절 간 상호작용 적용
         with torch.no_grad():
             # 긴 시퀀스는 세그먼트로 나누어 처리
             segments = []
@@ -299,7 +296,7 @@ class ModelBasedTrajectoryGenerator:
                 if len(model_output) > len(interpolated_degrees):
                     model_output = model_output[:len(interpolated_degrees)]
                 
-                # 모델 출력과 기본 보간 결과 블렌딩 - 항상 두 궤적 사이에 있도록 보장
+                # 모델 출력과 기본 보간 결과 블렌딩
                 correction_strength = 0.25  # 호 보간에서는 약간 약한 보정 적용
                 for joint in range(4):
                     for i in range(len(interpolated_degrees)):
@@ -317,7 +314,7 @@ class ModelBasedTrajectoryGenerator:
                         # 최종 안전 점검
                         interpolated_degrees[i, joint] = np.clip(interpolated_degrees[i, joint], lower_bound, upper_bound)
             
-        # 3단계: 각속도 재계산
+        # 각속도 재계산
         for joint in range(4):
             interpolated_velocities[:, joint] = np.gradient(interpolated_degrees[:, joint])
 
@@ -339,15 +336,15 @@ class ModelBasedTrajectoryGenerator:
         interpolated_velocities = np.zeros_like(aligned_target_velocities)
 
         t = np.linspace(0, 1, n_points)
-        weights = t * t * (3 - 2 * t)  # smooth step function
+        weights = t * t * (3 - 2 * t)
         
-        # 1단계: 기본 쿼터니언 보간 수행
+        #  기본 쿼터니언 보간 수행
         for i in range(n_points):
             # 타겟과 서브젝트의 각도를 라디안으로 변환
             target_rad = np.radians(aligned_target_angles[i])
             subject_rad = np.radians(aligned_subject_angles[i])
             
-            # 각도를 회전 객체로 변환 (처음 3개 관절만)
+            # 각도를 회전 객체로 변환 (deg1-deg30
             q_target = R.from_euler('xyz', target_rad[:3])
             q_subject = R.from_euler('xyz', subject_rad[:3])
             
@@ -357,6 +354,7 @@ class ModelBasedTrajectoryGenerator:
             
             # SLERP 직접 구현
             dot = np.sum(q_target_arr * q_subject_arr)
+
             # 최단 경로 보장
             if dot < 0:
                 q_subject_arr = -q_subject_arr
@@ -410,7 +408,7 @@ class ModelBasedTrajectoryGenerator:
                 interpolated_velocities[i, j] = h00*v0 + h10*0 + h01*v1 + h11*0
                 
             # 오일러 각도도 경계 내에 있는지 확인
-            for j in range(3):  # 첫 3개 관절 (쿼터니언으로 처리된)
+            for j in range(3):  # 첫 3개 관절
                 lower_bound = min(aligned_target_angles[i, j], aligned_subject_angles[i, j])
                 upper_bound = max(aligned_target_angles[i, j], aligned_subject_angles[i, j])
                 
@@ -419,7 +417,7 @@ class ModelBasedTrajectoryGenerator:
                     # 클리핑
                     interpolated_degrees[i, j] = np.clip(interpolated_degrees[i, j], lower_bound, upper_bound)
 
-        # 2단계: 모델 기반 관절 간 상호작용 적용
+        # 모델 기반 관절 간 상호작용 적용
         with torch.no_grad():
             # 긴 시퀀스는 세그먼트로 나누어 처리
             segments = []
@@ -445,7 +443,7 @@ class ModelBasedTrajectoryGenerator:
                     model_output = model_output[:len(interpolated_degrees)]
                 
                 # 모델 출력과 기본 보간 결과 블렌딩 - 항상 경계 내에 있도록 보장
-                correction_strength = 0.2  # 원형 보간에서는 더 약한 보정 적용
+                correction_strength = 0.2 
                 for joint in range(4):
                     for i in range(len(interpolated_degrees)):
                         # 경계 계산
@@ -462,7 +460,7 @@ class ModelBasedTrajectoryGenerator:
                         # 최종 안전 점검
                         interpolated_degrees[i, joint] = np.clip(interpolated_degrees[i, joint], lower_bound, upper_bound)
         
-        # 3단계: 각속도 재계산
+        # 각속도 재계산
         for joint in range(4):
             interpolated_velocities[:, joint] = np.gradient(interpolated_degrees[:, joint])
 
@@ -497,53 +495,96 @@ class ModelBasedTrajectoryGenerator:
         
         # 보간 방법 선택 및 적용 - 궤적 유형에 따라 다른 보간 방법 사용
         if 'clock' in trajectory_type.lower() or 'counter' in trajectory_type.lower():
-            print("원형 보간 사용 중 (모델 기반)")
+            print("Using circular interpolation")
             aligned_degrees, aligned_velocities = self.model_based_interpolate_circle(target_data, user_data)
         elif 'v_' in trajectory_type.lower() or 'h_' in trajectory_type.lower():
-            print("호 보간 사용 중 (모델 기반)")
+            print("Using circular arc interpolation")
             aligned_degrees, aligned_velocities = self.model_based_interpolate_arc(target_data, user_data)
         else:
-            print("선형 보간 사용 중 (모델 기반)")
+            print("Using linear interpolation")
             aligned_degrees, aligned_velocities = self.model_based_interpolate_line(target_data, user_data)
         
-        # 보간된 관절 각도로부터 end-effector 위치 계산
-        endeffector_degrees = aligned_degrees.copy()
-        endeffector_degrees[:, 1] -= 90  # 관절 변환 적용
-        endeffector_degrees[:, 3] -= 90
+        # # 보간된 관절 각도로부터 end-effector 위치 계산
+        # endeffector_degrees = aligned_degrees.copy()
+        # endeffector_degrees[:, 1] -= 90  # 관절 변환 적용
+        # endeffector_degrees[:, 3] -= 90
 
-        aligned_points = np.array([calculate_end_effector_position(deg) for deg in endeffector_degrees])
-        aligned_points = aligned_points * 1000  # 밀리미터 단위로 변환
+        # aligned_points = np.array([calculate_end_effector_position(deg) for deg in endeffector_degrees])
+        # aligned_points = aligned_points * 1000  # 밀리미터 단위로 변환
 
+        # # 결과 데이터프레임 생성
+        # generated_df = pd.DataFrame(
+        #     np.column_stack([aligned_points, aligned_degrees]),
+        #     columns=['x_end', 'y_end', 'z_end', 'deg1', 'deg2', 'deg3', 'deg4']
+        # )
+        
+        # # 모든 관절 값이 타겟과 사용자 궤적 사이에 있는지 확인
+        # for joint in ['deg1', 'deg2', 'deg3', 'deg4']:
+        #     for i in range(len(generated_df)):
+        #         if i < len(target_df) and i < len(user_df):
+        #             lower_bound = min(target_df[joint].iloc[i], user_df[joint].iloc[i])
+        #             upper_bound = max(target_df[joint].iloc[i], user_df[joint].iloc[i])
+                    
+        #             # 최종 결과가 경계를 벗어났는지 확인
+        #             if generated_df[joint].iloc[i] < lower_bound or generated_df[joint].iloc[i] > upper_bound:
+        #                 # 범위를 벗어나면 경계로 조정
+        #                 generated_df.at[i, joint] = np.clip(generated_df[joint].iloc[i], lower_bound, upper_bound)
+                        
+        #                 # 엔드이펙터 위치 재계산
+        #                 adjusted_degrees = generated_df.loc[i, ['deg1', 'deg2', 'deg3', 'deg4']].values
+        #                 adjusted_effector_degrees = adjusted_degrees.copy()
+        #                 adjusted_effector_degrees[1] -= 90
+        #                 adjusted_effector_degrees[3] -= 90
+                        
+        #                 new_position = calculate_end_effector_position(adjusted_effector_degrees) * 1000
+        #                 generated_df.at[i, 'x_end'] = new_position[0]
+        #                 generated_df.at[i, 'y_end'] = new_position[1]
+        #                 generated_df.at[i, 'z_end'] = new_position[2]
+        
+        # return generated_df
         # 결과 데이터프레임 생성
         generated_df = pd.DataFrame(
-            np.column_stack([aligned_points, aligned_degrees]),
-            columns=['x_end', 'y_end', 'z_end', 'deg1', 'deg2', 'deg3', 'deg4']
+            np.column_stack([aligned_degrees]),
+            columns=['deg1', 'deg2', 'deg3', 'deg4']
         )
         
-        # 최종 확인: 모든 관절 값이 타겟과 사용자 궤적 사이에 있는지 확인
+        # 각속도 데이터 추가
+        generated_df['degsec1'] = aligned_velocities[:, 0]
+        generated_df['degsec2'] = aligned_velocities[:, 1]
+        generated_df['degsec3'] = aligned_velocities[:, 2]
+        generated_df['degsec4'] = aligned_velocities[:, 3]
+        
+        # 생성된 궤적에 추가 스무딩 적용
+        generated_smoothed = self.smooth_data(generated_df)
+        
+        # 모든 관절 값이 타겟과 사용자 궤적 사이에 있는지 확인
         for joint in ['deg1', 'deg2', 'deg3', 'deg4']:
-            for i in range(len(generated_df)):
+            for i in range(len(generated_smoothed)):
                 if i < len(target_df) and i < len(user_df):
                     lower_bound = min(target_df[joint].iloc[i], user_df[joint].iloc[i])
                     upper_bound = max(target_df[joint].iloc[i], user_df[joint].iloc[i])
                     
                     # 최종 결과가 경계를 벗어났는지 확인
-                    if generated_df[joint].iloc[i] < lower_bound or generated_df[joint].iloc[i] > upper_bound:
+                    if generated_smoothed[joint].iloc[i] < lower_bound or generated_smoothed[joint].iloc[i] > upper_bound:
                         # 범위를 벗어나면 경계로 조정
-                        generated_df.at[i, joint] = np.clip(generated_df[joint].iloc[i], lower_bound, upper_bound)
-                        
-                        # 엔드이펙터 위치 재계산
-                        adjusted_degrees = generated_df.loc[i, ['deg1', 'deg2', 'deg3', 'deg4']].values
-                        adjusted_effector_degrees = adjusted_degrees.copy()
-                        adjusted_effector_degrees[1] -= 90
-                        adjusted_effector_degrees[3] -= 90
-                        
-                        new_position = calculate_end_effector_position(adjusted_effector_degrees) * 1000
-                        generated_df.at[i, 'x_end'] = new_position[0]
-                        generated_df.at[i, 'y_end'] = new_position[1]
-                        generated_df.at[i, 'z_end'] = new_position[2]
+                        generated_smoothed.at[i, joint] = np.clip(generated_smoothed[joint].iloc[i], lower_bound, upper_bound)
         
-        return generated_df
+        # 스무딩된 관절 각도로부터 end-effector 위치 계산
+        smoothed_degrees = generated_smoothed[['deg1', 'deg2', 'deg3', 'deg4']].values
+        endeffector_degrees = smoothed_degrees.copy()
+        endeffector_degrees[:, 1] -= 90  # 관절 변환 적용
+        endeffector_degrees[:, 3] -= 90
+
+        aligned_points = np.array([calculate_end_effector_position(deg) for deg in endeffector_degrees])
+        aligned_points = aligned_points * 1000  # 밀리미터 단위로 변환
+        
+        # 최종 데이터프레임 생성 (엔드이펙터 위치 + 스무딩된 관절 각도)
+        final_df = pd.DataFrame(
+            np.column_stack([aligned_points, smoothed_degrees]),
+            columns=['x_end', 'y_end', 'z_end', 'deg1', 'deg2', 'deg3', 'deg4']
+        )
+        
+        return final_df
 
     def visualize_trajectories(self, target_df, user_df, generated_df, trajectory_type, generation_number=1):
         """타겟과 사용자 궤적과 생성된 궤적을 시각화"""
@@ -649,7 +690,7 @@ class ModelBasedTrajectoryGenerator:
         full_df['sequence'] = range(num_points)
         full_df['timestamp'] = [i * 10 for i in range(num_points)]  # 10ms 간격
         
-        # 각도, 엔드이펙터터의 데이터 설정
+        # 각도, 엔드이펙터의 데이터 설정
         full_df['deg'] = (generated_df['deg1'].round(3).astype(str) + '/' + 
                         generated_df['deg2'].round(3).astype(str) + '/' +
                         generated_df['deg3'].round(3).astype(str) + '/' +
@@ -663,7 +704,7 @@ class ModelBasedTrajectoryGenerator:
         full_df = full_df[['r', 'sequence', 'timestamp', 'deg', 'endpoint']]
         
         full_df.to_csv(generation_path, index=False)
-        print(f"\n생성된 궤적 저장 완료: {generation_path}")
+        print(f"\nCompleted saving the generated trajectory: {generation_path}")
 
         return generation_path
         
@@ -714,15 +755,9 @@ class ModelBasedTrajectoryGenerator:
         plt.subplots_adjust(top=0.85)
         plt.show()
         
-        # 관절 간 상관관계 설명
-        print("\n관절 간 상관관계 분석 결과:")
-        print("----------------------------")
-        print("값이 1.0에 가까울수록 관절 간 상관관계가 강함을 의미합니다.")
-        print("이는 하나의 관절이 움직일 때 다른 관절이 조화롭게 움직이는 경향을 나타냅니다.")
-        
         # 가장 강한 관계 찾기
         avg_attention = np.mean(np.array(attentions), axis=0)
-        np.fill_diagonal(avg_attention, 0)  # 대각선(자기 자신과의 관계)은 무시
+        np.fill_diagonal(avg_attention, 0) 
         
         strongest_pairs = []
         for i in range(4):
@@ -732,6 +767,6 @@ class ModelBasedTrajectoryGenerator:
         # 상관관계가 강한 순서로 정렬
         strongest_pairs.sort(key=lambda x: x[2], reverse=True)
         
-        print("\n가장 강한 관절 간 상관관계 (상위 3개):")
+        print("\nStrongest Joint Correlation (Top 3):")
         for i, (joint1, joint2, strength) in enumerate(strongest_pairs[:3]):
             print(f"{i+1}. {joint_names[joint1]} ↔ {joint_names[joint2]}: {strength:.4f}")

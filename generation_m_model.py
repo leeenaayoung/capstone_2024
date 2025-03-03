@@ -45,7 +45,7 @@ class PositionalEncoding(nn.Module):
     
 class JointTrajectoryTransformer(nn.Module):
     """관절 간 상관관계를 학습하는 트랜스포머 모델"""
-    def __init__(self, n_joints=4, d_model=64, n_head=4, n_layers=3, dropout=0.1):
+    def __init__(self, n_joints=4, d_model=64, n_head=4, n_layers=4, dropout=0.2):
         super().__init__()
         
         self.joint_embedding = nn.Linear(n_joints, d_model)
@@ -63,7 +63,8 @@ class JointTrajectoryTransformer(nn.Module):
             d_model=d_model,
             nhead=n_head,
             dim_feedforward=d_model*4,
-            dropout=dropout
+            dropout=dropout,
+            batch_first=True
         )
         self.transformer = nn.TransformerEncoder(
             transformer_layer,
@@ -108,15 +109,16 @@ class TrajectoryDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
     
-class ModelTrainer:
+class GenerationModel:
     """모델 훈련 전용 클래스"""
     def __init__(self, base_dir=None, model_save_path=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.base_dir = base_dir or os.path.join(os.getcwd(), "data")
-        self.model_path = model_save_path or os.path.join(os.getcwd(), "models", "joint_relationship_model.pth")
-        
-        # 모델 디렉토리 생성
-        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+
+        if model_save_path:
+            self.model_path = model_save_path
+        else:
+            self.model_path = os.path.join(os.getcwd(), "best_generation_model.pth")
         
         # 모델 초기화
         self.model = JointTrajectoryTransformer().to(self.device)
@@ -128,13 +130,13 @@ class ModelTrainer:
                 base_dir=self.base_dir
             )
         except Exception as e:
-            print(f"분석기 초기화 오류: {str(e)}")
+            print(f"Analyzer initialization error: {str(e)}")
             self.analyzer = None
     
     def collect_training_data(self, data_dir=None, n_samples=100):
         """학습 데이터 수집"""
         if self.analyzer is None:
-            print("분석기가 초기화되지 않았습니다. 학습 데이터를 수집할 수 없습니다.")
+            print("Analyzer not initialized. Cannot collect training data.")
             return []
             
         # 데이터 디렉토리 설정
@@ -147,14 +149,14 @@ class ModelTrainer:
             if len(trajectory_files) > n_samples:
                 trajectory_files = random.sample(trajectory_files, n_samples)
             
-            print(f"총 {len(trajectory_files)}개의 궤적 파일에서 데이터 수집 중...")
+            print(f"Collecting data from {len(trajectory_files)} trajectory files...")
             
-            for file_name in tqdm(trajectory_files, desc="파일 로드 중"):
+            for file_name in tqdm(trajectory_files, desc="Loading files"):
                 file_path = os.path.join(base_dir, file_name)
                 
                 # 궤적 유형 추출
                 trajectory_type = None
-                for type_name in ['d_', 'clock', 'countere', 'v_s', 'h_']:
+                for type_name in ['d_', 'clock', 'counter', 'v_s', 'h_']:
                     if type_name in file_name.lower():
                         trajectory_type = type_name
                         break
@@ -171,17 +173,17 @@ class ModelTrainer:
                         if len(angles) >= 30:
                             trajectories.append(angles)
                     except Exception as e:
-                        print(f"파일 {file_name} 처리 중 오류 발생: {str(e)}")
+                        print(f"Error processing file {file_name}: {str(e)}")
             
-            print(f"총 {len(trajectories)}개의 궤적 데이터 수집 완료")
+            print(f"Successfully collected {len(trajectories)} trajectory data samples")
 
             # 데이터 통계 출력
             if trajectories:
                 lengths = [len(traj) for traj in trajectories]
-                print(f"궤적 길이 - 최소: {min(lengths)}, 최대: {max(lengths)}, 평균: {np.mean(lengths):.2f}")
+                print(f"Trajectory statistics - Min: {min(lengths)}, Max: {max(lengths)}, Average: {np.mean(lengths):.2f}")
     
         except Exception as e:
-            print(f"데이터 수집 중 오류 발생: {str(e)}")
+            print(f"Error during data collection: {str(e)}")
         
         return trajectories
     
@@ -192,7 +194,7 @@ class ModelTrainer:
             trajectories = self.collect_training_data()
             
         if not trajectories:
-            print("학습 데이터가 없습니다. 모델 학습을 건너뜁니다.")
+            print("No training data available. Skipping model training.")
             return False
         
         def collate_fn(batch):
@@ -227,12 +229,19 @@ class ModelTrainer:
         criterion = nn.L1Loss()
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         
+        # 최적의 모델 추적을 위한 변수
+        best_loss = float('inf')
+        best_model_state = None
+        best_epoch = 0
+        
         # 학습 루프
-        print(f"관절 관계 모델 학습 시작 (총 {len(trajectories)}개 궤적)...")
-        for epoch in tqdm(range(epochs), desc="학습 진행 상황"):
+        print(f"Starting joint relationship model training with {len(trajectories)} trajectories...")
+        for epoch in range(epochs):
+            # 각 에폭마다 새로운 tqdm 바 생성
+            epoch_progress = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
             total_loss = 0.0
             
-            for batch in train_loader:
+            for batch in epoch_progress:
                 batch = batch.to(self.device)
                 
                 # 순전파
@@ -247,18 +256,32 @@ class ModelTrainer:
                 optimizer.step()
                 
                 total_loss += loss.item()
+                # tqdm 바에 현재 손실 표시
+                epoch_progress.set_postfix(loss=f"{loss.item():.4f}")
             
-            # 에포크별 평균 손실 출력
-            print(f'Epoch [{epoch+1}/{epochs}], 평균 손실: {total_loss/len(train_loader):.4f}')
+            # 에포크별 평균 손실 계산
+            avg_loss = total_loss/len(train_loader)
+            print(f'Epoch [{epoch+1}/{epochs}], Average Loss: {avg_loss:.4f}')
             
-        # 학습 후, 모델 저장
-        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-        torch.save({
-            'model_state_dict': self.model.state_dict()
-        }, self.model_path)
+            # 최적의 모델 상태 저장
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                best_model_state = self.model.state_dict().copy()
+                best_epoch = epoch + 1
+                print(f"New best model found at epoch {best_epoch} with loss: {best_loss:.4f}")
         
-        print("모델 학습 완료 및 저장됨.")
-        print(f"모델 저장 위치: {self.model_path}")
+        # 최적의 모델 복원 및 저장
+        if best_model_state:
+            self.model.load_state_dict(best_model_state)
+            torch.save({
+                        'model_state_dict': best_model_state,
+                        'epoch': best_epoch,
+                        'loss': best_loss
+                    }, self.model_path)
+            
+            print(f"Best model saved (from epoch {best_epoch} with loss {best_loss:.4f})")
+        else:
+            print("Warning: No best model state found. This shouldn't happen.")
         
         # 모델을 다시 평가 모드로 설정
         self.model.eval()
