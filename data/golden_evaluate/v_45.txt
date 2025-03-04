@@ -1,0 +1,3 @@
+arc_radius: 0.3486
+arc_angle: 421.9568
+arc_roundness: 0.1663
