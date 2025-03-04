@@ -215,56 +215,6 @@ class TrajectoryGenerator:
 
         return interpolated_degrees, interpolated_velocities
 
-    # 쿼터니안 적용 x 보간 코드
-    # def interpolate_circle(self, target, subject):
-    #         """원형 운동을 위한 SLERP 보간"""
-    #         aligned_target, aligned_subject = self.normalize_time(target, subject)
-
-    #         aligned_target_angles = aligned_target[:, :4]
-    #         aligned_target_velocities = aligned_target[:, 4:]
-    #         aligned_subject_angles = aligned_subject[:, :4]
-    #         aligned_subject_velocities = aligned_subject[:, 4:]
-
-    #         n_points = len(aligned_target_angles)
-    #         interpolated_degrees = np.zeros_like(aligned_target_angles)
-    #         interpolated_velocities = np.zeros_like(aligned_target_velocities)
-
-    #         t = np.linspace(0, 1, n_points)
-
-    #         # 원형 운동을 위한 사인 기반 가중치
-    #         phase = 2 * np.pi * t
-    #         weights = (1 - np.cos(phase)) / 2
-
-    #         for joint in range(4):
-    #             # 각도 차이 계산 (360도 고려)
-    #             angle_diff = aligned_subject_angles[:, joint] - aligned_target_angles[:, joint]
-    #             angle_diff = np.where(angle_diff > 180, angle_diff - 360,
-    #                                 np.where(angle_diff < -180, angle_diff + 360, angle_diff))
-
-    #             # SLERP로 보간
-    #             for i, w in enumerate(weights):
-    #                 theta = np.radians(angle_diff[i])
-    #                 if np.abs(theta) < 1e-6:
-    #                     interpolated_degrees[i, joint] = aligned_target_angles[i, joint]
-    #                 else:
-    #                     sin_theta = np.sin(theta)
-    #                     interpolated_degrees[i, joint] = (
-    #                         aligned_target_angles[i, joint] * np.sin((1-w) * theta) / sin_theta +
-    #                         aligned_subject_angles[i, joint] * np.sin(w * theta) / sin_theta
-    #                     )
-
-    #                 # 각속도는 선형 보간
-    #                 interpolated_velocities[i, joint] = (
-    #                     (1-w) * aligned_target_velocities[i, joint] +
-    #                     w * aligned_subject_velocities[i, joint]
-    #                 )
-
-    #             # 관절 제한 적용
-    #             min_val, max_val = self.joint_limits[joint]
-    #             interpolated_degrees[:, joint] = np.clip(interpolated_degrees[:, joint], min_val, max_val)
-
-    #         return interpolated_degrees, interpolated_velocities
-
     # 쿼터니안 적용
     def interpolate_circle(self, target, subject):
         """쿼터니언 기반 SLERP를 사용한 원형 운동 보간"""
@@ -504,7 +454,7 @@ class TrajectoryGenerator:
                             generated_df['z_end'].round(3).astype(str))
         
         # 열 순서 지정 및 저장
-        columns = ['deg', 'endpoint']
+        columns = ['deg1', 'deg2', 'deg3', 'deg4','x_end', 'y_end','z_end']
         full_df = full_df[columns]
         
         full_df.to_csv(generation_path, index=False)
