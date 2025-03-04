@@ -1,0 +1,4 @@
+circle_height: 0.3318
+circle_ratio: 0.5426
+circle_radius: 0.1379
+start_end_distance: 0.1159
