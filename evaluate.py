@@ -186,14 +186,30 @@ class TrajectoryEvaluator:
         # End-effector 위치 계산
         user_points = np.array([calculate_end_effector_position(deg) for deg in smoothed_angles])
 
-        def calculate_y_axis_angle(points):
+        def calculate_line_angle(points):
             start, end = points[0], points[-1]
-            dy = end[1] - start[1]
-            dx = end[0] - start[0]
-            dz = end[2] - start[2]
-            xy_angle = np.degrees(np.arctan2(dx, dy))
-            yz_angle = np.degrees(np.arctan2(dz, dy))
-            return xy_angle, yz_angle
+            direction_vector = end - start
+            
+            # 벡터의 길이가 0인지 확인
+            if np.linalg.norm(direction_vector) == 0:
+                return 0.0  # 길이가 0이면 각도 정의 불가, 0도 반환
+            
+            # 방향 벡터 정규화
+            direction_vector = direction_vector / np.linalg.norm(direction_vector)
+
+            normal_vector = np.array([0, 0, 1])
+            
+            # 방향 벡터와 법선 벡터 사이의 각도 계산
+            cos_angle = np.abs(np.dot(direction_vector, normal_vector))
+            
+            # 지면과의 각도 계산
+            angle_rad = np.arccos(cos_angle)
+            ground_angle_rad = np.pi/2 - angle_rad
+            
+            # 라디안을 도로 변환
+            angle_deg = np.degrees(ground_angle_rad)
+            
+            return angle_deg
         
         def calculate_line_height(points):
             start, end = points[0], points[-1]
@@ -201,10 +217,19 @@ class TrajectoryEvaluator:
             return height
         
         def calculate_line_length(points):
-            distances = np.sqrt(np.sum(np.diff(points, axis=0)**2, axis=1))
-            return np.sum(distances)
+            # 시작점과 끝점 추출
+            start_point = points[0]
+            end_point = points[-1]
+            
+            # 두 점 사이의 유클리드 거리 계산
+            distance = np.sqrt(np.sum((end_point - start_point) ** 2))
+            
+            return distance
+        # def calculate_line_length(points):
+        #     distances = np.sqrt(np.sum(np.diff(points, axis=0)**2, axis=1))
+        #     return np.sum(distances)
         
-        line_degree = calculate_y_axis_angle(user_points)
+        line_degree = calculate_line_angle(user_points)
         line_height = calculate_line_height(user_points)
         line_length = calculate_line_length(user_points)
         
@@ -268,17 +293,60 @@ class TrajectoryEvaluator:
                 return center, radius
 
         def calculate_central_angle(points, center):
-            vectors = points - center
-            total_angle = 0
-            for i in range(1, len(vectors)):
-                v1 = vectors[i - 1]
-                v2 = vectors[i]
-                dot = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-                dot = np.clip(dot, -1.0, 1.0)
-                angle = np.arccos(dot)
-                total_angle += angle
-            return np.degrees(total_angle)
+            """ 수정중 """
+            # 시작점, 중간점, 끝점 선택
+            start_point = points[0]
+            mid_point = points[len(points)//2] 
+            end_point = points[-1]
+            
+            # 중심에서 각 점으로의 벡터 계산
+            v_start = start_point - center
+            v_mid = mid_point - center
+            v_end = end_point - center
+            
+            # 벡터 정규화
+            v_start_norm = np.linalg.norm(v_start)
+            v_mid_norm = np.linalg.norm(v_mid)
+            v_end_norm = np.linalg.norm(v_end)
+            
+            if v_start_norm == 0 or v_mid_norm == 0 or v_end_norm == 0:
+                return 0.0  # 중심과 점이 같은 경우 처리
+            
+            v_start = v_start / v_start_norm
+            v_mid = v_mid / v_mid_norm
+            v_end = v_end / v_end_norm
+            
+            # 내적으로 각도 계산
+            dot_product = np.clip(np.dot(v_start, v_end), -1.0, 1.0)
+            angle_rad = np.arccos(dot_product)
+            
+            # 호의 평면 찾기
+            plane_normal = np.cross(v_start, v_end)
+            plane_normal_norm = np.linalg.norm(plane_normal)
+            
+            # 세 점이 거의 일직선 상에 있는 경우 처리
+            if plane_normal_norm < 1e-10:
+                return 0.0 if dot_product > 0 else 180.0
+            
+            plane_normal = plane_normal / plane_normal_norm
+            
+            # 호의 방향 결정
+            cross_start_mid = np.cross(v_start, v_mid)
+            cross_start_end = np.cross(v_start, v_end)
+            
+            # 방향 결정을 위해 평면 법선 벡터와의 내적 사용
+            direction = np.dot(plane_normal, cross_start_mid)
+            
+            # 방향이 반대면 보완각 사용 (360도 - 계산된 각도)
+            if direction < 0:
+                angle_rad = 2 * np.pi - angle_rad
+            
+            # 라디안에서 도로 변환
+            angle_deg = np.degrees(angle_rad)
+            
+            return angle_deg
 
+        
         def calculate_arc_roundness(points, center):
             distances = np.linalg.norm(points - center, axis=1)
             return np.std(distances)
@@ -484,7 +552,7 @@ def calculate_score_with_golden(user_eval: dict,
     return round(final_score, 2)
 
 ############################
-# (3) 10등급으로 변환환 
+# (3) 10등급으로 변환
 ############################
 def convert_score_to_rank(score: float) -> int:
     """
@@ -502,7 +570,7 @@ def convert_score_to_rank(score: float) -> int:
     elif score > 100:
         score = 100
 
-    rank = 10 - int((score - 1) // 10)
+    rank = 5 - int((score - 1) // 20)
     if rank < 1:
         rank = 1
     elif rank > 10:

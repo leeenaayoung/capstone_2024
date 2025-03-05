@@ -10,7 +10,7 @@ from utils import preprocess_trajectory_data
 def main():
     # 1) 폴더 경로 설정
     #    - Windows 절대경로 (예: C:\Users\kdh03\Desktop\캡스톤\capstone_2024\data)
-    base_dir = r"C:\\Users\\kdh03\Desktop\\캡스톤\\capstone_2024\\data"
+    base_dir = "data"
     golden_dir = os.path.join(base_dir, "golden_sample")
 
     # 2) TrajectoryEvaluator 초기화
