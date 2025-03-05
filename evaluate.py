@@ -357,6 +357,158 @@ class TrajectoryEvaluator:
         except Exception as e:
             print(f"Error during trajectory evaluation: {str(e)}")
             raise
+        
+############################
+# (1) golden_evaluate 폴더에서
+#     정답 평가 결과를 불러오는 함수
+############################
+def load_golden_evaluation_results(golden_type: str, base_dir: str) -> dict:
+    """
+    golden_evaluate 폴더에서 'golden_type.txt'를 읽어
+    사전(dict) 형태로 key-value를 반환.
+    예: circle_height: 0.2794
+        circle_ratio: 0.5752
+    """
+    golden_eval_dir = os.path.join(base_dir, "golden_evaluate")
+    file_name = golden_type + ".txt"
+    file_path = os.path.join(golden_eval_dir, file_name)
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"No evaluation file found for {golden_type} at {file_path}")
+
+    golden_dict = {}
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line: 
+                continue
+            if ':' in line:
+                key, val_str = line.split(':')
+                key = key.strip()
+                val_str = val_str.strip()
+
+                # 튜플인지 float인지 판별 (간단 구현)
+                if val_str.startswith("(") and val_str.endswith(")"):
+                    # line_degree처럼 "(-28.052, -31.2492)" 형태
+                    import ast
+                    try:
+                        parsed_tuple = ast.literal_eval(val_str)
+                        golden_dict[key] = parsed_tuple
+                        continue
+                    except:
+                        pass  # 실패 시 아래 float 시도
+                        
+                try:
+                    val = float(val_str)
+                except ValueError:
+                    val = val_str
+                
+                golden_dict[key] = val
+
+    return golden_dict
+
+############################
+# (2) 사용자 vs 정답 궤적
+############################
+def calculate_score_with_golden(user_eval: dict,
+                                golden_eval: dict,
+                                use_minmax_normalize: bool = True) -> float:
+    """
+    1) user_eval : {'circle_height': 0.28, 'circle_ratio': 0.57, ...}
+    2) golden_eval : {'circle_height': 0.2794, 'circle_ratio': 0.5752, ...}
+
+    - (A) 공통 지표의 '차이(diff)'를 모두 구한다.
+      * float 지표는 단순 절댓값 차이
+      * tuple 지표(line_degree 등)는 각 원소별 절댓값 차이
+    - (B) Min-Max 스케일링을 적용할지(use_minmax_normalize=True) 결정
+       -> 모든 diff들을 0~1 범위로 매핑
+    - (C) 노말라이즈된 diff들의 평균(avg_diff)을 계산
+    - (D) 점수 = 100 - (avg_diff * 100)
+      * 만약 음수가 되면 0점으로 처리
+    """
+
+    # (A) 모든 diff를 모아두는 리스트
+    diff_list = []
+
+    for key, golden_val in golden_eval.items():
+        if key not in user_eval:
+            continue  # 사용자 측에 없는 지표는 생략
+        user_val = user_eval[key]
+
+        # float vs float
+        if isinstance(golden_val, float) and isinstance(user_val, float):
+            diff = abs(golden_val - user_val)
+            diff_list.append(diff)
+
+        # tuple vs tuple (예: line_degree)
+        elif isinstance(golden_val, tuple) and isinstance(user_val, tuple):
+            if len(golden_val) == len(user_val):
+                for i in range(len(golden_val)):
+                    diff_i = abs(golden_val[i] - user_val[i])
+                    diff_list.append(diff_i)
+
+    if not diff_list:
+        print("[Info] No matching metrics found.")
+        return 0.0
+
+    # (B) Min-Max 스케일링 적용 여부
+    if use_minmax_normalize:
+        min_diff = min(diff_list)
+        max_diff = max(diff_list)
+        # max_diff == min_diff 인 경우(전부 같은 값) 방어
+        if abs(max_diff - min_diff) < 1e-10:
+            # 차이가 전부 0이면 diff가 다 0 -> 평균도 0 -> 점수는 100
+            avg_diff_normalized = 0.0
+        else:
+            # 모든 diff를 0~1 범위로 매핑
+            normalized_diffs = [
+                (d - min_diff) / (max_diff - min_diff)
+                for d in diff_list
+            ]
+            # 평균
+            avg_diff_normalized = sum(normalized_diffs) / len(normalized_diffs)
+    else:
+        # 노말라이즈 안 하는 경우: diff 그대로 평균
+        avg_diff_normalized = sum(diff_list) / len(diff_list)
+
+    # (C) 평균 차이를 0~100 범위로 변환
+    #     예) avg_diff_normalized == 0 -> 스코어 100
+    #         avg_diff_normalized == 1 -> 스코어 0
+    raw_score = 100.0 - (avg_diff_normalized * 100.0)
+    final_score = max(0.0, raw_score)  # 음수 방지
+
+    print(f"[Debug] use_minmax_normalize={use_minmax_normalize}")
+    print(f"[Debug] diff_list={diff_list}")
+    print(f"[Debug] avg_diff_normalized={avg_diff_normalized:.4f}, raw_score={raw_score:.2f}, final_score={final_score:.2f}")
+
+    return round(final_score, 2)
+
+############################
+# (3) 10등급으로 변환환 
+############################
+def convert_score_to_rank(score: float) -> int:
+    """
+    점수(0~100)를 10등급으로 변환:
+     -  0 ~ 10  -> 10등급
+     - 11 ~ 20  ->  9등급
+     - ...
+     - 91 ~100  ->  1등급
+
+    반환값: 등급(1~10)
+    """
+    # 안전 장치
+    if score < 0:
+        score = 0
+    elif score > 100:
+        score = 100
+
+    rank = 10 - int((score - 1) // 10)
+    if rank < 1:
+        rank = 1
+    elif rank > 10:
+        rank = 10
+
+    return rank
 
 # 난이도 조정기(예정)
 
@@ -399,6 +551,22 @@ def main():
                 print(f"{metric}: {rounded_values}")
             else:
                 print(f"{metric}: {value}")
+                
+        # --------------------------------------------------
+        # 점수 산출:
+        #   1) 정답 평가 결과 불러오기
+        #   2) 사용자 vs 정답 비교 -> 점수
+        #   3) 등급 계산
+        # --------------------------------------------------
+        print("\nNow loading golden evaluation & calculating score...")
+        golden_dict = load_golden_evaluation_results(trajectory_type, base_dir)
+        final_score = calculate_score_with_golden(evaluation_result, golden_dict)
+        
+        print(f"\n[Final Score] => {final_score:.2f} / 100")
+
+        # 등급 계산 후 출력
+        grade = convert_score_to_rank(final_score)
+        print(f"[Final Grade] => {grade}등급")
 
     except Exception as e:
         print(f"\nError occurred: {str(e)}")
