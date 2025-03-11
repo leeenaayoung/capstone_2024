@@ -105,9 +105,9 @@ def generate_trajectories(args):
         return False
     
     # 관절 간 상관관계 분석
-    if args.analyze_relationships:
-        print("\nAnalyzing the correlation between joints...")
-        generator.analyze_joint_relationships()
+    # print("\nAnalyzing the correlation between joints...")
+    # generator.analyze_joint_relationships()
+    
     
     # 모델 기반 궤적 생성
     print("\nCreating model-based trajectories...")
