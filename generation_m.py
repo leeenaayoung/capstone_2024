@@ -103,7 +103,7 @@ class ModelBasedTrajectoryGenerator:
         
     #     return smoothed_df
 
-    def smooth_data(self, data, window_length=13, polyorder=2):
+    def smooth_data(self, data, window_length=9, polyorder=3):
         smoothed_df = data.copy()
         for col in ['deg1', 'deg2', 'deg3', 'deg4', 'degsec1', 'degsec2', 'degsec3', 'degsec4']:
             smoothed_df[col] = savgol_filter(data[col], window_length=window_length, polyorder=polyorder)
@@ -327,6 +327,9 @@ class ModelBasedTrajectoryGenerator:
             q_target_arr = q_target.as_quat()
             q_subject_arr = q_subject.as_quat()
 
+            # SLERP 직접 구현
+            dot = np.sum(q_target_arr * q_subject_arr)
+
             # 방향성 보정
             dot = np.sum(q_target_arr * q_subject_arr)
             if dot < 0.0:
@@ -346,11 +349,24 @@ class ModelBasedTrajectoryGenerator:
                     s0 = np.cos(theta) - dot * sin_theta / sin_theta_0
                     s1 = sin_theta / sin_theta_0
                     result = s0 * q_target_arr + s1 * q_subject_arr
-            result = result / np.linalg.norm(result)  # 정규화
+            
+            # 정규화
+            result = result / np.linalg.norm(result)  
             q_interp = R.from_quat(result)
+            
+            # 오일러 각도로 변환
             euler_angles = q_interp.as_euler('xyz', degrees=True)
             interpolated_degrees[i, :3] = euler_angles
-            interpolated_degrees[i, 3] = (1 - weights[i]) * aligned_target_angles[i, 3] + weights[i] * aligned_subject_angles[i, 3]
+            
+            # 4번째 조인트는 선형 보간 - 경계 확인
+            target_val = aligned_target_angles[i, 3]
+            subject_val = aligned_subject_angles[i, 3]
+            lower_bound = min(target_val, subject_val)
+            upper_bound = max(target_val, subject_val)
+            
+            # 선형 보간 후 경계 내로 제한
+            interp_val = (1 - weights[i]) * target_val + weights[i] * subject_val
+            interpolated_degrees[i, 3] = np.clip(interp_val, lower_bound, upper_bound)
 
         # 각속도 계산
         interpolated_velocities = np.gradient(interpolated_degrees, axis=0)
@@ -378,15 +394,18 @@ class ModelBasedTrajectoryGenerator:
         target_with_vel = target_df.copy()
         user_with_vel = user_df.copy()
         
+        # 각속도 계산
         for df in [target_with_vel, user_with_vel]:
             df['degsec1'] = np.gradient(df['deg1'])
             df['degsec2'] = np.gradient(df['deg2'])
             df['degsec3'] = np.gradient(df['deg3'])
             df['degsec4'] = np.gradient(df['deg4'])
         
+        # 데이터 스무딩
         target_smoothed = self.smooth_data(target_with_vel)
         user_smoothed = self.smooth_data(user_with_vel)
 
+        # 데이터 준비
         target_angles = target_smoothed[['deg1', 'deg2', 'deg3', 'deg4']].values
         target_velocities = target_smoothed[['degsec1', 'degsec2', 'degsec3', 'degsec4']].values
         user_angles = user_smoothed[['deg1', 'deg2', 'deg3', 'deg4']].values
@@ -395,6 +414,7 @@ class ModelBasedTrajectoryGenerator:
         target_data = np.column_stack([target_angles, target_velocities])
         user_data = np.column_stack([user_angles, user_velocities])
         
+        # DTW로 시간 정규화
         aligned_target, aligned_subject = self.normalize_time(target_data, user_data)
         aligned_target_angles = aligned_target[:, :4]
         aligned_target_velocities = aligned_target[:, 4:]
@@ -404,35 +424,103 @@ class ModelBasedTrajectoryGenerator:
         n_points = len(aligned_target_angles)
         assert len(aligned_target_angles) == len(aligned_subject_angles), "Aligned lengths do not match after DTW"
 
-        timestamps = np.arange(n_points).reshape(-1, 1) / n_points
+        # 관절별 특성을 고려한 보간 가중치 설정
+        joint_weights = np.ones((n_points, 4)) * 0.5  # 기본 가중치 0.5 (균등)
         
-        t = np.linspace(0, 1, n_points)
-        target_bias = 0.7
-        weights = target_bias + (1 - target_bias) * (t * t * (3 - 2 * t))
+        # 각 관절마다 특성을 반영한 보간 가중치 조정
+        # 예: 타겟과 사용자 궤적의 변화 패턴에 따라 가중치 조정
+        for joint in range(4):
+            # 두 궤적의 변화율 차이에 따라 가중치 조정
+            target_changes = np.abs(np.diff(aligned_target_angles[:, joint], prepend=aligned_target_angles[0, joint]))
+            subject_changes = np.abs(np.diff(aligned_subject_angles[:, joint], prepend=aligned_subject_angles[0, joint]))
+            
+            # 변화율이 큰 궤적에 더 높은 가중치 부여
+            change_ratio = target_changes / (target_changes + subject_changes + 1e-10)
+            
+            # 부드러운 가중치 전환을 위해 필터링
+            smoothed_ratio = savgol_filter(change_ratio, min(15, len(change_ratio) - 1 if len(change_ratio) % 2 == 0 else len(change_ratio)), 3)
+            
+            # 가중치 범위 제한 (0.3~0.7)
+            joint_weights[:, joint] = np.clip(smoothed_ratio, 0.3, 0.7)
         
-        interpolated_angles = (1 - weights[:, np.newaxis]) * aligned_target_angles + weights[:, np.newaxis] * aligned_subject_angles
-        interpolated_velocities = (1 - weights[:, np.newaxis]) * aligned_target_velocities + weights[:, np.newaxis] * aligned_subject_velocities
+        # 보간 수행 (관절별 가중치 적용)
+        interpolated_angles = np.zeros_like(aligned_target_angles)
+        interpolated_velocities = np.zeros_like(aligned_target_velocities)
         
+        for joint in range(4):
+            for i in range(n_points):
+                # 가중치 기반 보간
+                weight = joint_weights[i, joint]
+                interpolated_angles[i, joint] = (1 - weight) * aligned_target_angles[i, joint] + weight * aligned_subject_angles[i, joint]
+                interpolated_velocities[i, joint] = (1 - weight) * aligned_target_velocities[i, joint] + weight * aligned_subject_velocities[i, joint]
+        
+        # 엔드이펙터 위치 계산
         interpolated_positions = np.array([calculate_end_effector_position(deg) for deg in interpolated_angles])
         
-        # 입력 데이터 준비: 각도 4 + 각속도 4 + 위치 3 + timestamp 1 = 12
-        combined_input = np.hstack([interpolated_angles, interpolated_velocities, interpolated_positions[:, :3], timestamps])
+        # 관절 상관 관계를 고려한 모델 기반 보정
+        timestamps = np.arange(n_points).reshape(-1, 1) / n_points
+        
+        # 추가 특성 계산 - 관절 간 상관관계
+        angle_correlations = np.zeros((n_points, 6))  # 4C2 = 6개 관절 쌍
+        idx = 0
+        for i in range(4):
+            for j in range(i+1, 4):
+                angle_correlations[:, idx] = interpolated_angles[:, i] - interpolated_angles[:, j]
+                idx += 1
+        
+        # 가속도 계산
+        accelerations = np.gradient(interpolated_velocities, axis=0)
+        
+        # 입력 데이터 준비
+        combined_features = np.hstack([
+            interpolated_angles,
+            interpolated_velocities,
+            accelerations,  # 추가: 가속도
+            angle_correlations,  # 추가: 관절 간 상관관계
+            interpolated_positions,
+            timestamps
+        ])
+        
+        # 모델 적용
         with torch.no_grad():
-            input_tensor = torch.FloatTensor(combined_input).unsqueeze(0).to(self.device)  # (1, n_points, 12)
+            input_tensor = torch.FloatTensor(combined_features).unsqueeze(0).to(self.device)
             angles = input_tensor[:, :, :4]
             velocities = input_tensor[:, :, 4:8]
-            timestamps_tensor = input_tensor[:, :, 11:12]  # timestamp 위치 조정
-            output_angles = self.model(angles, velocities, timestamps_tensor).squeeze(0).cpu().numpy()
+            timestamps_tensor = input_tensor[:, :, -1:] 
+            model_output = self.model(angles, velocities, timestamps_tensor).squeeze(0).cpu().numpy()
         
-        interpolated_degrees = output_angles
+        # 최종 보정 (모델 출력과 보간 결과 가중치 합)
+        correction_strength = 0.3
+        interpolated_degrees = np.zeros_like(interpolated_angles)
+        
+        for joint in range(4):
+            for i in range(n_points):
+                # 제한 범위 설정
+                lower_bound = min(aligned_target_angles[i, joint], aligned_subject_angles[i, joint])
+                upper_bound = max(aligned_target_angles[i, joint], aligned_subject_angles[i, joint])
+                
+                # 모델 출력을 제한 범위 내로 클리핑
+                bounded_output = np.clip(model_output[i, joint], lower_bound, upper_bound)
+                
+                # 원본 보간 값과 모델 출력 결합
+                interpolated_degrees[i, joint] = (1 - correction_strength) * interpolated_angles[i, joint] + correction_strength * bounded_output
+                
+                # 최종 결과가 경계 내에 있도록 보장
+                interpolated_degrees[i, joint] = np.clip(interpolated_degrees[i, joint], lower_bound, upper_bound)
+        
+        # 각속도 재계산
         interpolated_velocities = np.gradient(interpolated_degrees, axis=0)
         
+        # 결과 데이터프레임 생성
         result_df = pd.DataFrame(interpolated_degrees, columns=['deg1', 'deg2', 'deg3', 'deg4'])
         result_df['degsec1'] = interpolated_velocities[:, 0]
         result_df['degsec2'] = interpolated_velocities[:, 1]
         result_df['degsec3'] = interpolated_velocities[:, 2]
         result_df['degsec4'] = interpolated_velocities[:, 3]
-        result_df[['x_end', 'y_end', 'z_end']] = interpolated_positions * 1000
+        
+        # 엔드이펙터 위치 재계산
+        end_positions = np.array([calculate_end_effector_position(deg) for deg in interpolated_degrees]) * 1000
+        result_df[['x_end', 'y_end', 'z_end']] = end_positions
         
         return result_df
 
@@ -445,12 +533,12 @@ class ModelBasedTrajectoryGenerator:
         
         # End-effector 위치 계산 - 시각화를 위한 변환 적용
         target_degrees_adj = target_degrees.copy()
-        target_degrees_adj[:, 1] -= 90
-        target_degrees_adj[:, 3] -= 90
+        # target_degrees_adj[:, 1] -= 90
+        # target_degrees_adj[:, 3] -= 90
         
         user_degrees_adj = user_degrees.copy()
-        user_degrees_adj[:, 1] -= 90
-        user_degrees_adj[:, 3] -= 90
+        # user_degrees_adj[:, 1] -= 90
+        # user_degrees_adj[:, 3] -= 90
         
         target_ends = np.array([calculate_end_effector_position(deg) for deg in target_degrees_adj]) * 1000
         user_ends = np.array([calculate_end_effector_position(deg) for deg in user_degrees_adj]) * 1000
