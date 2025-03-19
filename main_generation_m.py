@@ -105,19 +105,19 @@ def generate_trajectories(args):
         return False
     
     # 관절 간 상관관계 분석
-    # print("\nAnalyzing the correlation between joints...")
-    # generator.analyze_joint_relationships()
-    
+    if args.analyze_relationships:
+        print("\nAnalyzing the correlation between joints...")
+        generator.analyze_joint_relationships()
     
     # 모델 기반 궤적 생성
     print("\nCreating model-based trajectories...")
     try:
-        generated_df = generator.interpolate_trajectory(
-            target_df=target_trajectory,
-            user_df=user_trajectory,
-            trajectory_type=trajectory_type
-        )
-
+        generated_df, results = generator.interpolate_trajectory(
+                        target_df=target_trajectory,
+                        user_df=user_trajectory,
+                        trajectory_type=trajectory_type
+                    )
+                            
         # 시각화 및 저장
         print("\nVisualizing and saving trajectories...")
         generator.visualize_trajectories(
@@ -137,8 +137,8 @@ def generate_trajectories(args):
 def main():
     parser = argparse.ArgumentParser(description='Train and execute trajectory generation models')
     
-    parser.add_argument('--mode', type=str, default='generate', choices=['train', 'generate', 'both'],
-                        help='Execution mode (train: model training, generate: trajectory generation, both: both modes)')
+    parser.add_argument('--mode', type=str, default='generate', choices=['train', 'generate'],
+                        help='Execution mode (train: model training, generate: trajectory generation)')
     
     # 공통 인자
     parser.add_argument('--base_dir', type=str, default='./data',
