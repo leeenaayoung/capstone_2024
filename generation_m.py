@@ -189,22 +189,12 @@ class ModelBasedTrajectoryGenerator:
         return aligned_target, aligned_subject
     
     def normalize_time_arc(self, target_trajectory, subject_trajectory, num_points=None):
-        """
-        호 길이 기반 시간 정규화 (호 궤적 전용)
+        """ 호 길이 기반 시간 정규화 (호 궤적 전용) """
+        # if target_trajectory.ndim != 2 or subject_trajectory.ndim != 2:
+        #     raise ValueError(f"입력 데이터는 2차원 배열이어야 합니다. 현재 차원: target {target_trajectory.ndim}, subject {subject_trajectory.ndim}")
         
-        Parameters:
-        target_trajectory: 타겟 궤적 데이터 (각도와 각속도)
-        subject_trajectory: 사용자 궤적 데이터 (각도와 각속도)
-        num_points: 정규화 후 데이터 포인트 수
-        
-        Returns:
-        tuple: (정규화된 타겟 궤적, 정규화된 사용자 궤적)
-        """
-        if target_trajectory.ndim != 2 or subject_trajectory.ndim != 2:
-            raise ValueError(f"입력 데이터는 2차원 배열이어야 합니다. 현재 차원: target {target_trajectory.ndim}, subject {subject_trajectory.ndim}")
-        
-        if target_trajectory.shape[1] != subject_trajectory.shape[1]:
-            raise ValueError(f"두 궤적의 특성 수가 일치해야 합니다. target: {target_trajectory.shape[1]}, subject: {subject_trajectory.shape[1]}")
+        # if target_trajectory.shape[1] != subject_trajectory.shape[1]:
+        #     raise ValueError(f"두 궤적의 특성 수가 일치해야 합니다. target: {target_trajectory.shape[1]}, subject: {subject_trajectory.shape[1]}")
         
         # 기본 샘플 수 설정 (더 긴 궤적에 맞춤)
         if num_points is None:
@@ -222,14 +212,14 @@ class ModelBasedTrajectoryGenerator:
         
         for i in range(len(target_angles)):
             angles_adj = target_angles[i].copy()
-            angles_adj[1] -= 90
-            angles_adj[3] -= 90
+            # angles_adj[1] -= 90
+            # angles_adj[3] -= 90
             target_ee_positions[i] = calculate_end_effector_position(angles_adj)
         
         for i in range(len(subject_angles)):
             angles_adj = subject_angles[i].copy()
-            angles_adj[1] -= 90
-            angles_adj[3] -= 90
+            # angles_adj[1] -= 90
+            # angles_adj[3] -= 90
             subject_ee_positions[i] = calculate_end_effector_position(angles_adj)
         
         # 2. 호 길이 기반 매개변수화
@@ -327,14 +317,14 @@ class ModelBasedTrajectoryGenerator:
         
         for i in range(len(target_angles)):
             angles_adj = target_angles[i].copy()
-            angles_adj[1] -= 90
-            angles_adj[3] -= 90
+            # angles_adj[1] -= 90
+            # angles_adj[3] -= 90
             target_ee_positions[i] = calculate_end_effector_position(angles_adj)
         
         for i in range(len(subject_angles)):
             angles_adj = subject_angles[i].copy()
-            angles_adj[1] -= 90
-            angles_adj[3] -= 90
+            # angles_adj[1] -= 90
+            # angles_adj[3] -= 90
             subject_ee_positions[i] = calculate_end_effector_position(angles_adj)
         
         # 2. 원형 궤적 매개변수화 (위상 기반)
@@ -855,8 +845,8 @@ class ModelBasedTrajectoryGenerator:
         
         smoothed_degrees = generated_smoothed[['deg1', 'deg2', 'deg3', 'deg4']].values
         endeffector_degrees = smoothed_degrees.copy()
-        endeffector_degrees[:, 1] -= 90
-        endeffector_degrees[:, 3] -= 90
+        # endeffector_degrees[:, 1] -= 90
+        # endeffector_degrees[:, 3] -= 90
 
         aligned_points = np.array([calculate_end_effector_position(deg) for deg in endeffector_degrees])
         aligned_points = aligned_points * 1000
@@ -875,12 +865,12 @@ class ModelBasedTrajectoryGenerator:
         generated_degrees = generated_df[['deg1', 'deg2', 'deg3', 'deg4']].values
         
         target_degrees_adj = target_degrees.copy()
-        target_degrees_adj[:, 1] -= 90
-        target_degrees_adj[:, 3] -= 90
+        # target_degrees_adj[:, 1] -= 90
+        # target_degrees_adj[:, 3] -= 90
         
         user_degrees_adj = user_degrees.copy()
-        user_degrees_adj[:, 1] -= 90
-        user_degrees_adj[:, 3] -= 90
+        # user_degrees_adj[:, 1] -= 90
+        # user_degrees_adj[:, 3] -= 90
         
         target_ends = np.array([calculate_end_effector_position(deg) for deg in target_degrees_adj]) * 1000
         user_ends = np.array([calculate_end_effector_position(deg) for deg in user_degrees_adj]) * 1000
