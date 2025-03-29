@@ -1,145 +1,181 @@
 import os
+import argparse
 import random
-import torch
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from generation import TrajectoryGenerator
 from analyzer import TrajectoryAnalyzer
-from generation_model import JointTrajectoryTransformer
-from utils import calculate_end_effector_position
+from generation import ModelBasedTrajectoryGenerator
+from generation_model import GenerationModel
 
-class ImprovedTrajectoryGenerator(TrajectoryGenerator):
-    def __init__(self, analyzer, generation_model_path='trajectory_generation_model.pth', device=None):
-        # 부모 클래스 초기화로 normalize_time 등의 메서드 상속
-        super().__init__(analyzer)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
-        self.correlation_model = self._initialize_model(generation_model_path)
-
-    def _initialize_model(self, model_path):
-        """상관관계 모델 초기화 및 로드"""
-        model = JointTrajectoryTransformer().to(self.device)
-        try:
-            checkpoint = torch.load(model_path, map_location=self.device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            model.eval()
-            print("Correlation model loaded successfully")
-        except Exception as e:
-            print(f"Failed to load model: {e}")
-        return model
-
-    def interpolate_trajectory(self, target_df, user_df, trajectory_type):
-        """개선된 보간 함수: DTW 정규화와 상관관계 모델 통합"""
-        # 1단계: 기존 방식으로 초기 보간 수행
-        initial_df = super().interpolate_trajectory(target_df, user_df, trajectory_type)
-        
-        # 2단계: 데이터 준비 및 DTW 정규화
-        # 각도 데이터 추출
-        target_angles = target_df[['deg1', 'deg2', 'deg3', 'deg4']].values
-        user_angles = user_df[['deg1', 'deg2', 'deg3', 'deg4']].values
-        initial_angles = initial_df[['deg1', 'deg2', 'deg3', 'deg4']].values
-
-        # DTW 정규화를 위해 속도 데이터를 포함한 전체 데이터 준비
-        target_full = np.column_stack([target_angles, np.zeros_like(target_angles)])  # 속도는 0으로 패딩
-        initial_full = np.column_stack([initial_angles, np.zeros_like(initial_angles)])
-        
-        # normalize_time 메서드를 사용하여 시간 정규화
-        aligned_target, aligned_initial = self.normalize_time(target_full, initial_full)
-        
-        # 정규화된 각도 데이터 추출
-        aligned_target_angles = aligned_target[:, :4]
-        aligned_initial_angles = aligned_initial[:, :4]
-
-        # 3단계: 상관관계 모델 적용 및 조정
-        with torch.no_grad():
-            # 정규화된 데이터를 모델에 입력
-            input_tensor = torch.FloatTensor(aligned_initial_angles).unsqueeze(0).to(self.device)
-            model_output = self.correlation_model(input_tensor).squeeze(0).cpu().numpy()
-            
-            # 원본과의 거리에 기반한 가중치 계산
-            target_dist = np.mean(np.abs(aligned_target_angles - aligned_initial_angles), axis=1)
-            total_dist = target_dist / target_dist.max()  # 정규화
-            
-            # 시그모이드 함수를 사용한 부드러운 가중치 계산
-            weights = 1 / (1 + np.exp(-5 * (total_dist - 0.5)))
-            weights = weights.reshape(-1, 1)
-            
-            # 최종 각도 계산 - 부드러운 보간
-            final_angles = (1 - weights) * aligned_initial_angles + weights * model_output
-
-            # Joint limit 적용
-            for joint in range(4):
-                min_val, max_val = self.joint_limits[joint]
-                final_angles[:, joint] = np.clip(final_angles[:, joint], min_val, max_val)
-
-        # 4단계: End-effector 위치 계산 및 결과 생성
-        endeffector_points = np.array([calculate_end_effector_position(deg) for deg in final_angles])
-        endeffector_points = endeffector_points * 1000
-
-        # 결과 데이터프레임 생성
-        generated_df = pd.DataFrame(
-            np.column_stack([endeffector_points, final_angles]),
-            columns=['x_end', 'y_end', 'z_end', 'deg1', 'deg2', 'deg3', 'deg4']
-        )
-
-        return generated_df
-
-def main():
-    base_dir = os.path.join(os.getcwd(), "data")
+def train_model(args):
+    """ 생성 모델 학습 """
+    print("\n======== Training Mode ========")
     
+    # 학습 디렉토리 및 모델 경로 설정
+    base_dir = args.base_dir
+    model_path = "best_generation_model.pth"
+    
+    # 모델 트레이너 초기화
+    trainer = GenerationModel(
+        base_dir=base_dir,
+        model_save_path=model_path
+    )
+    
+    # 학습 데이터 수집 및 모델 학습
+    trajectories = trainer.collect_training_data(
+        n_samples=args.samples
+    )
+    
+    if not trajectories or len(trajectories) == 0:
+        print("Error: Could not collect training data. Check the data directory structure.")
+        return False
+    
+    print(f"\nEpoch: {args.epochs}")
+    success = trainer.train_model(
+        trajectories=trajectories,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate
+    )
+    
+    if success:
+        print(f"\nModel training has been successfully completed.")
+        print(f"Model Path: {model_path}")
+    else:
+        print("\nModel training failure")
+    
+    return success
+
+def generate_trajectories(args):
+    """궤적 생성 기능"""
+    print("\n======== Trajectory Generation Mode ========")
+    
+    # 디렉토리 및 모델 경로 설정
+    base_dir = args.base_dir
+    model_path = "best_generation_model.pth"
+    
+    # 모델 경로 확인
+    if not os.path.exists(model_path):
+        print(f"Error: Model file not found: {model_path}")
+        return False
+    
+    # 분석기 초기화
     try:
-        # 분석기 객체 초기화
         analyzer = TrajectoryAnalyzer(
             classification_model="best_classification_model.pth",
             base_dir=base_dir
         )
-        
-        # 개선된 생성기 초기화
-        final_generator = ImprovedTrajectoryGenerator(
-            analyzer=analyzer,
-            generation_model_path='trajectory_generation_model.pth'
-        )
-
-        # 사용자 궤적 파일 로드
-        print("\nLoading and classifying user trajectories...")
-        non_golden_dir = os.path.join(base_dir, "non_golden_sample")
-        non_golden_files = [f for f in os.listdir(non_golden_dir) if f.endswith('.txt')]
-        
-        if not non_golden_files:
-            raise ValueError("No trajectory files found in the non_golden_sample directory.")
-        
+    except Exception as e:
+        print(f"Error: Analyzer initialization failed: {str(e)}")
+        return False
+    
+    # 생성기 초기화
+    generator = ModelBasedTrajectoryGenerator(
+        analyzer=analyzer,
+        model_path=model_path
+    )
+    
+    # 사용자 궤적 파일 선택
+    non_golden_dir = os.path.join(base_dir, "non_golden_sample")
+    
+    if not os.path.exists(non_golden_dir):
+        print(f"Error: non_golden_sample directory not found: {non_golden_dir}")
+        return False
+    
+    non_golden_files = [f for f in os.listdir(non_golden_dir) if f.endswith('.txt')]
+    
+    if not non_golden_files:
+        print(f"Error: No trajectory file in non_golden_sample directory: {non_golden_dir}")
+        return False
+    
+    # 파일 선택 (지정된 파일 또는 랜덤)
+    if args.trajectory_file and args.trajectory_file in non_golden_files:
+        selected_file = args.trajectory_file
+    else:
         selected_file = random.choice(non_golden_files)
-        print(f"Selected user trajectory: {selected_file}")
         
-        file_path = os.path.join(non_golden_dir, selected_file)
-
-        # 궤적 로드 및 분류
+    print(f"Selected user trajectory files: {selected_file}")
+    file_path = os.path.join(non_golden_dir, selected_file)
+    
+    # 궤적 로드 및 분류
+    try:
+        print("\nLoading and analyzing user trajectories...")
         user_trajectory, trajectory_type = analyzer.load_user_trajectory(file_path)
         target_trajectory, _ = analyzer.load_target_trajectory(trajectory_type)
-        
-        # 보간 및 정제가 통합된 궤적 생성
-        print("\nGenerating trajectory with correlation model...")
-        generated_df = final_generator.interpolate_trajectory(
-            target_df=target_trajectory,
-            user_df=user_trajectory,
-            trajectory_type=trajectory_type
-        )
-
+    except Exception as e:
+        print(f"Error: Trajectory load and classification failure: {str(e)}")
+        return False
+    
+    # 관절 간 상관관계 분석
+    if args.analyze_relationships:
+        print("\nAnalyzing the correlation between joints...")
+        generator.analyze_joint_relationships()
+    
+    # 모델 기반 궤적 생성
+    print("\nCreating model-based trajectories...")
+    try:
+        generated_df, results = generator.interpolate_trajectory(
+                        target_df=target_trajectory,
+                        user_df=user_trajectory,
+                        trajectory_type=trajectory_type
+                    )
+                            
         # 시각화 및 저장
         print("\nVisualizing and saving trajectories...")
-        final_generator.visualize_trajectories(
+        generator.visualize_trajectories(
             target_df=target_trajectory,
             user_df=user_trajectory,
             generated_df=generated_df,
-            trajectory_type=trajectory_type
+            trajectory_type=trajectory_type,
+            generation_number=args.generation_number
         )
         
         print("\nProcessing completed!")
-        
+        return True
     except Exception as e:
-        print(f"\nError occurred: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error: Error creating trajectory: {str(e)}")
+        return False
+
+def main():
+    parser = argparse.ArgumentParser(description='Train and execute trajectory generation models')
+    
+    parser.add_argument('--mode', type=str, default='generate', choices=['train', 'generate'],
+                        help='Execution mode (train: model training, generate: trajectory generation)')
+    
+    # 공통 인자
+    parser.add_argument('--base_dir', type=str, default='./data',
+                        help='Base directory path for data')
+    
+    # 학습 관련 인자
+    parser.add_argument('--epochs', type=int, default=100, 
+                        help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='Training batch size')
+    parser.add_argument('--samples', type=int, default=100,
+                        help='Number of trajectory samples for training')
+    parser.add_argument('--learning_rate', type=float, default=0.001,
+                        help='Learning rate')
+    
+    # 생성 관련 인자
+    parser.add_argument('--trajectory_file', type=str, default=None,
+                        help='Specific trajectory file name to use (random selection if not specified)')
+    parser.add_argument('--generation_number', type=int, default=1,
+                        help='Generation number (used in output filename)')
+    parser.add_argument('--analyze_relationships', action='store_true',
+                        help='Perform joint relationship analysis')
+    
+    args = parser.parse_args()
+    
+    # # 경로 확인 및 생성
+    # os.makedirs(args.model_dir, exist_ok=True)
+    
+    # 모드에 따른 실행
+    if args.mode == 'train' or args.mode == 'both':
+        train_result = train_model(args)
+        if not train_result and args.mode == 'both':
+            print("모델 학습 실패로 인해 궤적 생성을 건너뜁니다.")
+            return
+    
+    if args.mode == 'generate' or args.mode == 'both':
+        generate_trajectories(args)
 
 if __name__ == "__main__":
     main()

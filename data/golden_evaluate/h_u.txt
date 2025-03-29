@@ -1,3 +1,2 @@
-arc_radius: 1.0828
-arc_angle: 492.4474
-arc_roundness: 0.4077
+going: {'arc_radius': 0.6090486801321621, 'arc_angle': 125.53512107719409, 'arc_roundness': 0.0019397618827061659}
+returning: {'arc_radius': 0.5863737037592862, 'arc_angle': 126.73455774165636, 'arc_roundness': 0.0014707963947734586}
