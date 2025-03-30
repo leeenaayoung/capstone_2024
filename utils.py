@@ -84,4 +84,31 @@ def calculate_end_effector_position(degrees):
         np.cos(q[2]) * np.sin(q[1]))) / 25
     return np.array([x, y, z])
 
-    
+# 자코비안 계산
+def calculate_jacobian_np(q1, q2, q3, q4, l1=0.26, l2=0.31):
+    cos_q1, sin_q1 = np.cos(q1), np.sin(q1)
+    cos_q2, sin_q2 = np.cos(q2), np.sin(q2)
+    cos_q3, sin_q3 = np.cos(q3), np.sin(q3)
+    cos_q4, sin_q4 = np.cos(q4), np.sin(q4)
+
+    J = np.array([
+        [l2*cos_q4*(sin_q1*sin_q2*sin_q3 - cos_q2*cos_q3*sin_q1) - l2*cos_q1*sin_q4 - l1*cos_q2*sin_q1,
+         -cos_q1*(l1*sin_q2 + l2*cos_q4*(cos_q2*sin_q3 + cos_q3*sin_q2)),
+         -l2*cos_q1*cos_q4*(cos_q2*sin_q3 + cos_q3*sin_q2),
+         - (cos_q2*cos_q3 - sin_q2*sin_q3)*(l2*cos_q1*sin_q4 - l2*cos_q4*(sin_q1*sin_q2*sin_q3 - cos_q2*cos_q3*sin_q1)) - l2*cos_q4*(cos_q2*sin_q1*sin_q3 + cos_q3*sin_q1*sin_q2)*(cos_q2*sin_q3 + cos_q3*sin_q2)],
+
+        [l1*cos_q1*cos_q2 - l2*sin_q1*sin_q4 + l2*cos_q4*(cos_q1*cos_q2*cos_q3 - cos_q1*sin_q2*sin_q3),
+         -sin_q1*(l1*sin_q2 + l2*cos_q4*(cos_q2*sin_q3 + cos_q3*sin_q2)),
+         -l2*cos_q4*sin_q1*(cos_q2*sin_q3 + cos_q3*sin_q2),
+         l2*cos_q4*(cos_q1*cos_q2*sin_q3 + cos_q1*cos_q3*sin_q2)*(cos_q2*sin_q3 + cos_q3*sin_q2) - (cos_q2*cos_q3 - sin_q2*sin_q3)*(l2*sin_q1*sin_q4 - l2*cos_q4*(cos_q1*cos_q2*cos_q3 - cos_q1*sin_q2*sin_q3))],
+
+        [0, cos_q1*(l1*cos_q1*cos_q2 - l2*sin_q1*sin_q4 + l2*cos_q4*(cos_q1*cos_q2*cos_q3 - cos_q1*sin_q2*sin_q3)) + sin_q1*(l1*cos_q2*sin_q1 + l2*cos_q1*sin_q4 - l2*cos_q4*(sin_q1*sin_q2*sin_q3 - cos_q2*cos_q3*sin_q1)),
+         sin_q1*(l2*cos_q1*sin_q4 - l2*cos_q4*(sin_q1*sin_q2*sin_q3 - cos_q2*cos_q3*sin_q1)) - cos_q1*(l2*sin_q1*sin_q4 - l2*cos_q4*(cos_q1*cos_q2*cos_q3 - cos_q1*sin_q2*sin_q3)),
+         - (cos_q1*cos_q2*sin_q3 + cos_q1*cos_q3*sin_q2)*(l2*cos_q1*sin_q4 - l2*cos_q4*(sin_q1*sin_q2*sin_q3 - cos_q2*cos_q3*sin_q1))
+         - (cos_q2*sin_q1*sin_q3 + cos_q3*sin_q1*sin_q2)*(l2*sin_q1*sin_q4 - l2*cos_q4*(cos_q1*cos_q2*cos_q3 - cos_q1*sin_q2*sin_q3))],
+
+        [0, sin_q1, sin_q1, -cos_q1*cos_q2*sin_q3 - cos_q1*cos_q3*sin_q2],
+        [0, -cos_q1, -cos_q1, -cos_q2*sin_q1*sin_q3 - cos_q3*sin_q1*sin_q2],
+        [1, 0, 0, cos_q2*cos_q3 - sin_q2*sin_q3]])
+
+    return J
