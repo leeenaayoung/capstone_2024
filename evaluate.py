@@ -1,132 +1,13 @@
 import numpy as np
 import pandas as pd
-from scipy.ndimage import gaussian_filter1d
-from fastdtw import fastdtw
-from scipy.spatial.distance import euclidean
-from dataloader import ClassificationDataset
+from analyzer import TrajectoryAnalyzer
+from scipy.interpolate import UnivariateSpline
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from utils import *
 import random
 import os
 import ast
-import math
 
-# 분류 모델 및 궤적 로드
-class TrajectoryAnalyzer:
-    def __init__(self, classification_model: str = "best_classification_model.pth", base_dir="data"):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-        c_base_path = "data/all_data"
-        self.c_dataset = ClassificationDataset(c_base_path)  
-        print("Available labels", self.c_dataset.unique_labels)
-
-        self.trajectory_types = {i: label for i, label in enumerate(self.c_dataset.unique_labels)}
-        # print("\nGenerated trajectory_types:", self.trajectory_types)
-
-        self.classifier = self.load_classifier(classification_model)
-        self.base_dir = base_dir
-        self.golden_dir = os.path.join(self.base_dir, "golden_sample")
-
-    def load_classifier(self, model_path : str):
-        """ 분류 모델 로드 """
-        try:
-            from model import TransformerModel
-            model = TransformerModel(
-                input_dim=21,      
-                d_model=32,       
-                nhead=2,           
-                num_layers=3,      
-                num_classes=len(self.trajectory_types)
-            ).to(self.device)
-
-            # 저장된 state_dict 로드
-            state_dict = torch.load(model_path, map_location=self.device)
-            print("state_dict keys:", state_dict.keys())
-            
-            # 가중치를 모델에 적용
-            model.load_state_dict(state_dict)
-            
-            # 평가 모드로 설정
-            model.eval()
-            
-            print(f"Successfully loaded classification model : {model_path}")
-            return model
-                
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
-            raise
-
-    def load_user_trajectory(self, file_path: str = "data/non_golden_sample"):
-        """ 사용자 궤적 로드 """
-        try:
-            df = pd.read_csv(file_path, delimiter=',')
-            scaled_df, preprocessed_df = preprocess_trajectory_data(df, scaler=self.c_dataset.scaler, return_raw=True)
-
-            # 분류 시 스케일링 적용된 데이터 사용
-            tensor_data = torch.FloatTensor(scaled_df.values).unsqueeze(0)
-            tensor_data = tensor_data.to(self.device)
-            
-            with torch.no_grad(): 
-                predictions = self.classifier(tensor_data)
-                predicted_class = torch.argmax(predictions, dim=1).item()
-                
-                # trajectory_types에서 해당 클래스 찾기
-                if predicted_class in self.trajectory_types:
-                    predicted_type = self.trajectory_types[predicted_class]
-                else:
-                    raise ValueError(f"Predicted Class Index {predicted_class}is not in the trajectory_types")
-            
-            print(f"Classification Result : {predicted_type}")
-
-            return preprocessed_df, predicted_type
-            
-        except Exception as e:
-            print(f"Trajectory file {file_path} error during processing: {str(e)}")
-            raise
-
-    def load_target_trajectory(self, trajectory_type: str):
-        """ user_trajectory와 같은 타입의 target_trajectory 로드"""
-        try:
-            matching_files = [f for f in os.listdir(self.golden_dir) 
-                            if f.startswith(trajectory_type) and f.endswith('.txt')]
-            
-            if not matching_files:
-                raise ValueError(f"From the golden_sample directory {trajectory_type} can't find the trajectory of the type")
-            
-            # 매칭되는 파일들 중 하나를 무작위로 선택(타겟 궤적 하나로 수정)
-            selected_file = random.choice(matching_files)
-            file_path = os.path.join(self.golden_dir, selected_file)
-            
-            # 선택된 파일 로드 및 전처리
-            df = pd.read_csv(file_path, delimiter=',')
-            _, preprocessed_df = preprocess_trajectory_data(df, scaler=self.c_dataset.scaler, return_raw=True)
-
-            
-            return preprocessed_df, selected_file
-            
-        except Exception as e:
-            print(f"Error loading target trajectory: {str(e)}")
-            raise
-
-    def validate_input(df):
-        if len(df) < 3:
-            raise ValueError("Insufficient data points. At least 3 points are required.")
-        if not all(col in df.columns for col in ['x_end', 'y_end', 'z_end']):
-            raise ValueError("Input DataFrame must contain 'x_end', 'y_end', and 'z_end' columns.")
-        
-    def classify_trajectory_type(self, trajectory_type: str) -> str:
-        """세부 궤적 유형을 주요 궤적 유형(line, arc, circle)으로 분류"""
-        if any(t in trajectory_type for t in ['d_l', 'd_r']):
-            return 'line'
-        elif any(t in trajectory_type for t in ['v_45', 'v_90', 'v_135', 'v_180', 'h_u', 'h_d']):
-            return 'arc'
-        elif any(t in trajectory_type for t in ['clock', 'counter']):
-            return 'circle'
-        else:
-            raise ValueError(f"Unknown trajectory type: {trajectory_type}")
-
-# 궤적 평가
 class TrajectoryEvaluator:
     def __init__(self):
         self.trajectory_types = {
@@ -141,68 +22,68 @@ class TrajectoryEvaluator:
             }
         }
     
-    def smooth_data(self, data, R=0.02, Q=0.1):
-        """칼만 필터를 사용한 데이터 스무딩"""
-        n = len(data)
-        smoothed = np.zeros_like(data)
+    # def smooth_data(self, data, smoothing_factor=0.5, degree=3):
+    #     """ 스플라인 스무딩을 사용하여 로봇 관절 각도와 각속도 데이터 스무딩 """
+    #     is_dataframe_input = isinstance(data, pd.DataFrame)
         
-        for dim in range(data.shape[1]):
-            x_hat = data[0, dim]
-            P = 1.0
+    #     # NumPy 배열인 경우 DataFrame으로 변환
+    #     if not is_dataframe_input:
+    #         columns = []
+    #         if data.shape[1] >= 4:
+    #             columns += [f'deg{i+1}' for i in range(4)]
+    #         if data.shape[1] >= 8:
+    #             columns += [f'degsec{i+1}' for i in range(4)]
+    #         data = pd.DataFrame(data, columns=columns)
             
-            x_hat_full = np.array([data[0, dim], 0])
-            P_full = np.eye(2)
-            
-            dt = 1.0
-            A = np.array([[1, dt],
-                         [0, 1]])
-            
-            H = np.array([1, 0])
-            
-            Q_matrix = Q * np.array([[dt**4/4, dt**3/2],
-                                    [dt**3/2, dt**2]])
-            
-            smoothed[0, dim] = x_hat
-            for k in range(1, n):
-                x_hat_full = A @ x_hat_full
-                P_full = A @ P_full @ A.T + Q_matrix
-                
-                y = data[k, dim] - H @ x_hat_full
-                S = H @ P_full @ H.T + R
-                K = P_full @ H.T / S
-                
-                x_hat_full = x_hat_full + K * y
-                P_full = (np.eye(2) - np.outer(K, H)) @ P_full
-                
-                smoothed[k, dim] = x_hat_full[0]
+    #     # 원본 데이터 복사
+    #     smoothed_df = data.copy()
         
-        return smoothed
+    #     # 각 열에 대해 스플라인 스무딩 적용
+    #     for col in ['deg1', 'deg2', 'deg3', 'deg4', 'degsec1', 'degsec2', 'degsec3', 'degsec4']:
+    #         if col in data.columns:
+    #             try:
+    #                 # 시간 인덱스 생성
+    #                 x = np.arange(len(data))
+    #                 y = data[col].values
+                    
+    #                 # 데이터의 규모에 따라 스무딩 매개변수 조정
+    #                 s = smoothing_factor * len(data)
+    #                 spline = UnivariateSpline(x, y, k=degree, s=s)
+    #                 smoothed_df[col] = spline(x)
+                    
+    #                 # 각속도 열을 스무딩할 때 물리적 제약 고려
+    #                 if col.startswith('degsec'):
+    #                     angle_col = 'deg' + col[6:]
+    #                     if angle_col in data.columns:
+    #                         pass
+    #             except Exception as e:
+    #                 print(f"Error smoothing column {col}: {str(e)}")
+    #                 # 오류 발생 시 원본 값 유지
+        
+    #     # NumPy 배열로 반환
+    #     if 'deg1' in smoothed_df.columns:
+    #         cols_to_return = [col for col in ['deg1', 'deg2', 'deg3', 'deg4'] if col in smoothed_df.columns]
+    #         return smoothed_df[cols_to_return].values
+    #     else:
+    #         # 열 이름이 맞지 않는 경우
+    #         return smoothed_df.values
     
-    ####################
     # 직선 궤적 평가
-    ####################
     def evaluate_line(self, user_df):
-        # -----------------------------------------
-        # (1) 각도 데이터 추출 및 스무딩
-        # -----------------------------------------
+        # 각도 데이터 추출 및 스무딩
         angle_data = user_df[['deg1', 'deg2', 'deg3', 'deg4']].values
-        smoothed_angles = self.smooth_data(angle_data)
+        # smoothed_angles = self.smooth_data(angle_data)
         
         # End-effector 위치 계산
-        user_points = np.array([calculate_end_effector_position(deg) for deg in smoothed_angles])
+        user_points = np.array([calculate_end_effector_position(deg) for deg in angle_data])
         
-        # -----------------------------------------
-        # (2) 왕복 운동에서 '정점' 구하기
-        #     - 시작점에서 가장 멀리 떨어진 지점(인덱스)
-        # -----------------------------------------
+        # 왕복 운동에서 '정점' 구하기
         start_point = user_points[0]
         distances_from_start = np.linalg.norm(user_points - start_point, axis=1)  # 각 점까지의 거리
         turn_idx = np.argmax(distances_from_start)  # 가장 멀리 떨어진 인덱스(왕복 최정점)
         turn_point = user_points[turn_idx]
 
-        # -----------------------------------------
-        # (3) 각도 계산: 시작점 ~ 정점 사이 벡터 기준, XY평면과 이루는 각도
-        # -----------------------------------------
+        # n각도 계산: 시작점 ~ 정점 사이 벡터 기준, XY평면과 이루는 각도
         def calculate_line_angle(start_p, end_p):
             direction_vector = end_p - start_p
             dist = np.linalg.norm(direction_vector)
@@ -216,25 +97,16 @@ class TrajectoryEvaluator:
             # 왕복 방향에 따라 음수가 될 수 있으므로 절댓값
             return abs(angle_deg)
 
-        # -----------------------------------------
-        # (4) 높이 계산: (시작점 ~ 정점) z좌표 차
-        # -----------------------------------------
+        # 높이 계산: (시작점 ~ 정점) z좌표 차
         def calculate_line_height(start_p, end_p):
             return abs(end_p[2] - start_p[2])
 
-        # -----------------------------------------
-        # (5) 궤적 전체 길이 계산
-        #     - 모든 연속된 점 사이의 거리 합산
-        # -----------------------------------------
+        # 궤적 전체 길이 계산
         def calculate_line_length(points):
-            # points: [p0, p1, p2, ... , pN]
-            # p0->p1, p1->p2, ... 연속된 각 구간 거리 합
             segment_distances = np.sqrt(np.sum(np.diff(points, axis=0) ** 2, axis=1))
             return segment_distances.sum()
 
-        # -----------------------------------------
-        # (6) 결과 계산
-        # -----------------------------------------
+        # 결과 계산
         line_degree = calculate_line_angle(start_point, turn_point)
         line_height = calculate_line_height(start_point, turn_point)
         line_length = calculate_line_length(user_points)
@@ -288,25 +160,12 @@ class TrajectoryEvaluator:
         r = np.sqrt((x1 - cx)**2 + (y1 - cy)**2)
         return np.array([cx, cy]), r
 
-        ####################
     # 호 궤적 평가
-    ####################
     def debug_plot_3d(self, points_3d, plane_origin, ex, ey, ez, center_3d, radius_3d):
-        """
-        3D 시각화:
-        - points_3d : 주된 3개 점(시작, 중간, 끝) -> 빨간색 굵은 점
-        - plane_origin, ex, ey, ez : 평면 정의
-        - center_3d, radius_3d    : 3D 원(arc)
-
-        + 추가:
-        - self.other_points_3d (옵션): "나머지" 좌표점들. (N,3) shape
-            debug_plot_3d 호출 시 파라미터를 늘리지 않고도,
-            이 값을 읽어와 작은 파란 점으로 표시함.
-        """
         fig = plt.figure()
         ax = fig.add_subplot(projection='3d')
 
-        # (0) "나머지" 점들(전체 궤적 등)을 작은 파란 점으로 표시
+        # "나머지" 점들(전체 궤적 등)을 작은 파란 점으로 표시
         other_points_3d = getattr(self, 'other_points_3d', None)
         if other_points_3d is not None and len(other_points_3d) > 0:
             ax.scatter(
@@ -319,7 +178,7 @@ class TrajectoryEvaluator:
                 label='Other Points'
             )
 
-        # (1) 빨간색으로 3개 주요 점 (시작, 중간, 끝)
+        # 빨간색으로 3개 주요 점 (시작, 중간, 끝)
         ax.scatter(
             points_3d[:, 0],
             points_3d[:, 1],
@@ -330,7 +189,7 @@ class TrajectoryEvaluator:
             label='Main 3 Points'
         )
 
-        # (2) 평면 (반투명 surface)
+        # 평면 투영
         plane_size = max(radius_3d * 1.5, 0.5)
         n_grid = 20
         u_vals = np.linspace(-plane_size, plane_size, n_grid)
@@ -345,7 +204,7 @@ class TrajectoryEvaluator:
         Zp = plane_xyz[:, :, 2]
         ax.plot_surface(Xp, Yp, Zp, alpha=0.3)
 
-        # (3) 피팅된 원(arc) 그리기
+        # 피팅된 원 그리기
         t_samples = np.linspace(0, 2*np.pi, 100)
         circle_pts = []
         for t in t_samples:
@@ -362,12 +221,11 @@ class TrajectoryEvaluator:
             label='Fitted Arc'
         )
 
-        # (4) 축 비율 맞추기
+        # 축 비율 맞추기
         xs = points_3d[:, 0]
         ys = points_3d[:, 1]
         zs = points_3d[:, 2]
 
-        # 만약 other_points_3d가 있다면, 범위 계산에 포함
         if other_points_3d is not None and len(other_points_3d) > 0:
             xs = np.concatenate([xs, other_points_3d[:, 0]])
             ys = np.concatenate([ys, other_points_3d[:, 1]])
@@ -396,12 +254,7 @@ class TrajectoryEvaluator:
 
 
     def define_plane_from_3pts(self, p1, p2, p3):
-        """
-        3점이 정의하는 평면:
-          - plane_origin: 무게중심
-          - normal
-          - ex, ey: 평면 기저
-        """
+        """ 3점이 정의하는 평면 """
         plane_origin = (p1 + p2 + p3) / 3.0
         v1 = p2 - p1
         v2 = p3 - p1
@@ -524,10 +377,10 @@ class TrajectoryEvaluator:
         """
         # (1) 스무딩
         angle_data = user_df[['deg1','deg2','deg3','deg4']].values
-        smoothed = self.smooth_data(angle_data)
+        # smoothed = self.smooth_data(angle_data)
 
         # (2) FK -> 3D
-        all_points_3d = np.array([calculate_end_effector_position(deg) for deg in smoothed])
+        all_points_3d = np.array([calculate_end_effector_position(deg) for deg in angle_data])
         if len(all_points_3d) < 3:
             print("데이터가 3개 미만입니다.")
             return {
@@ -659,8 +512,6 @@ class TrajectoryEvaluator:
             }
         }
 
-        
-
     ####################
     # 원 궤적 평가
     ####################
@@ -678,10 +529,10 @@ class TrajectoryEvaluator:
         """
         # (A) 데이터 추출 & 스무딩
         angle_data = user_df[['deg1','deg2','deg3','deg4']].values
-        smoothed = self.smooth_data(angle_data)
+        # smoothed = self.smooth_data(angle_data)
 
         # (B) FK -> 3D
-        points_3d = np.array([calculate_end_effector_position(deg) for deg in smoothed])
+        points_3d = np.array([calculate_end_effector_position(deg) for deg in angle_data])
         if len(points_3d) < 2:
             print("점이 2개 미만.")
             return {
@@ -853,7 +704,7 @@ def load_golden_evaluation_results(golden_type: str, base_dir: str) -> dict:
       returning: {'arc_radius': 0.5863, ...}
     => going, returning 둘 다 실제 dict로 파싱
     """
-    golden_eval_dir = os.path.join(base_dir, "golden_evaluate")
+    golden_eval_dir = os.path.join(base_dir, "data/golden_evaluate")
     file_name = golden_type + ".txt"
     file_path = os.path.join(golden_eval_dir, file_name)
 
@@ -978,15 +829,38 @@ def calculate_score_with_golden(
 ############################
 # (3) 10등급으로 변환
 ############################
+# def convert_score_to_rank(score: float) -> int:
+#     """
+#     점수(0~100)를 10등급으로 변환:
+#      -  0 ~ 10  -> 10등급
+#      - 11 ~ 20  ->  9등급
+#      - ...
+#      - 91 ~100  ->  1등급
+
+#     반환값: 등급(1~10)
+#     """
+#     # 안전 장치
+#     if score < 0:
+#         score = 0
+#     elif score > 100:
+#         score = 100
+
+#     rank = 5 - int((score - 1) // 20)
+#     if rank < 1:
+#         rank = 1
+#     elif rank > 10:
+#         rank = 10
+
+#     return rank
 def convert_score_to_rank(score: float) -> int:
     """
-    점수(0~100)를 10등급으로 변환:
-     -  0 ~ 10  -> 10등급
-     - 11 ~ 20  ->  9등급
-     - ...
-     - 91 ~100  ->  1등급
+    점수(0~100)를 4등급으로 변환:
+     -  0 ~ 25  -> 4등급
+     - 26 ~ 50  -> 3등급
+     - 51 ~ 75  -> 2등급
+     - 76 ~100  -> 1등급
 
-    반환값: 등급(1~10)
+    반환값: 등급(1~4)
     """
     # 안전 장치
     if score < 0:
@@ -994,15 +868,17 @@ def convert_score_to_rank(score: float) -> int:
     elif score > 100:
         score = 100
 
-    rank = 5 - int((score - 1) // 20)
-    if rank < 1:
+    # 점수에 따른 등급 계산
+    if score <= 25:
+        rank = 4
+    elif score <= 50:
+        rank = 3
+    elif score <= 75:
+        rank = 2
+    else:  # score <= 100
         rank = 1
-    elif rank > 10:
-        rank = 10
 
     return rank
-
-# 난이도 조정기(예정)
 
 def main():
     base_dir = os.path.join(os.getcwd(), "data")
@@ -1025,7 +901,6 @@ def main():
         
         # 파일 선택 및 궤적 로드
         selected_file = random.choice(non_golden_files)
-        # selected_file = "C:\\Users\\kdh03\\Desktop\\캡스톤\\capstone_2024\\data\\all_data\\v_45_41.txt"
         print(f"Selected user trajectory: {selected_file}")
         
         file_path = os.path.join(non_golden_dir, selected_file)

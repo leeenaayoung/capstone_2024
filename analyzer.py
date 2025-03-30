@@ -18,8 +18,6 @@ class TrajectoryAnalyzer:
         print("Available labels", self.c_dataset.unique_labels)
 
         self.trajectory_types = {i: label for i, label in enumerate(self.c_dataset.unique_labels)}
-        # print("\nGenerated trajectory_types:", self.trajectory_types)
-
         self.classifier = self.load_classifier(classification_model)
         self.base_dir = base_dir
         self.golden_dir = os.path.join(self.base_dir, "golden_sample")
