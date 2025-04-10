@@ -71,7 +71,7 @@ class TrajectoryAnalyzer:
                 else:
                     raise ValueError(f"Predicted Class Index {predicted_class}is not in the trajectory_types")
             
-            print(f"Classification Result : {predicted_type}")
+            # print(f"Classification Result : {predicted_type}")
 
             return preprocessed_df, predicted_type
             
@@ -79,7 +79,6 @@ class TrajectoryAnalyzer:
             print(f"Trajectory file {file_path} error during processing: {str(e)}")
             raise
     
-    # 타겟 궤적 하나로 수정
     def load_target_trajectory(self, trajectory_type: str, user_df=None):
         """ user_trajectory와 같은 타입의 target_trajectory 로드"""
         try:

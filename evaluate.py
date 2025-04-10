@@ -827,31 +827,8 @@ def calculate_score_with_golden(
     return round(final_score, 2)
 
 ############################
-# (3) 10등급으로 변환
+# (3) 4등급으로 변환
 ############################
-# def convert_score_to_rank(score: float) -> int:
-#     """
-#     점수(0~100)를 10등급으로 변환:
-#      -  0 ~ 10  -> 10등급
-#      - 11 ~ 20  ->  9등급
-#      - ...
-#      - 91 ~100  ->  1등급
-
-#     반환값: 등급(1~10)
-#     """
-#     # 안전 장치
-#     if score < 0:
-#         score = 0
-#     elif score > 100:
-#         score = 100
-
-#     rank = 5 - int((score - 1) // 20)
-#     if rank < 1:
-#         rank = 1
-#     elif rank > 10:
-#         rank = 10
-
-#     return rank
 def convert_score_to_rank(score: float) -> int:
     """
     점수(0~100)를 4등급으로 변환:

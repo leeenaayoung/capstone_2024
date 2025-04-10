@@ -65,182 +65,181 @@ class ModelBasedTrajectoryGenerator:
         
         return smoothed_df
             
-    def normalize_time(self, target_trajectory, subject_trajectory):
-        """궤적 유형에 따라 적절한 정규화 방법 호출"""
-        if hasattr(self, 'current_type'):
-            if 'clock' in self.current_type.lower() or 'counter' in self.current_type.lower():
-                return self.normalize_time_circle(target_trajectory, subject_trajectory)
-            elif 'v_' in self.current_type.lower() or 'h_' in self.current_type.lower():
-                return self.normalize_time_arc(target_trajectory, subject_trajectory)
+    # def normalize_time(self, target_trajectory, subject_trajectory):
+    #     """궤적 유형에 따라 적절한 정규화 방법 호출"""
+    #     if hasattr(self, 'current_type'):
+    #         if 'clock' in self.current_type.lower() or 'counter' in self.current_type.lower():
+    #             return self.normalize_time_circle(target_trajectory, subject_trajectory)
+    #         elif 'v_' in self.current_type.lower() or 'h_' in self.current_type.lower():
+    #             return self.normalize_time_arc(target_trajectory, subject_trajectory)
         
-        # 기본 정규화 방법 (일반 선형 궤적용)
-        return self.normalize_time_dtw(target_trajectory, subject_trajectory)
+    #     return self.normalize_time_dtw(target_trajectory, subject_trajectory)
 
-    def normalize_time_dtw(self, target_trajectory, subject_trajectory):
-        """선형 궤적 시간 정규화"""
-        target_angles = target_trajectory[:, :4]
-        subject_angles = subject_trajectory[:, :4]
+    # def normalize_time_dtw(self, target_trajectory, subject_trajectory):
+    #     """선형 궤적 시간 정규화"""
+    #     target_angles = target_trajectory[:, :4]
+    #     subject_angles = subject_trajectory[:, :4]
         
-        normalized_target_angles = np.zeros_like(target_angles)
-        normalized_subject_angles = np.zeros_like(subject_angles)
+    #     normalized_target_angles = np.zeros_like(target_angles)
+    #     normalized_subject_angles = np.zeros_like(subject_angles)
         
-        for joint in range(4):
-            min_val = self.joint_limits[joint][0] 
-            max_val = self.joint_limits[joint][1] 
-            range_val = max_val - min_val
-            normalized_target_angles[:, joint] = (target_angles[:, joint] - min_val) / range_val
-            normalized_subject_angles[:, joint] = (subject_angles[:, joint] - min_val) / range_val
+    #     for joint in range(4):
+    #         min_val = self.joint_limits[joint][0] 
+    #         max_val = self.joint_limits[joint][1] 
+    #         range_val = max_val - min_val
+    #         normalized_target_angles[:, joint] = (target_angles[:, joint] - min_val) / range_val
+    #         normalized_subject_angles[:, joint] = (subject_angles[:, joint] - min_val) / range_val
         
-        _, path = fastdtw(normalized_target_angles, normalized_subject_angles, dist=euclidean)
-        path = np.array(path, dtype=np.int32)
+    #     _, path = fastdtw(normalized_target_angles, normalized_subject_angles, dist=euclidean)
+    #     path = np.array(path, dtype=np.int32)
         
-        aligned_target = target_trajectory[path[:, 0]]
-        aligned_subject = subject_trajectory[path[:, 1]]
+    #     aligned_target = target_trajectory[path[:, 0]]
+    #     aligned_subject = subject_trajectory[path[:, 1]]
         
-        return aligned_target, aligned_subject
+    #     return aligned_target, aligned_subject
     
-    def normalize_time_arc(self, target_trajectory, subject_trajectory, num_points=None):
-        """ 호 길이 기반 시간 정규화 (호 궤적 전용) """
-        # 기본 샘플 수 설정 (더 긴 궤적에 맞춤)
-        if num_points is None:
-            num_points = max(len(target_trajectory), len(subject_trajectory))
+    # def normalize_time_arc(self, target_trajectory, subject_trajectory, num_points=None):
+    #     """ 호 길이 기반 시간 정규화 (호 궤적 전용) """
+    #     # 기본 샘플 수 설정 (더 긴 궤적에 맞춤)
+    #     if num_points is None:
+    #         num_points = max(len(target_trajectory), len(subject_trajectory))
         
-        # 각도와 각속도 분리
-        target_angles = target_trajectory[:, :4]
-        target_velocities = target_trajectory[:, 4:]
-        subject_angles = subject_trajectory[:, :4]
-        subject_velocities = subject_trajectory[:, 4:]
+    #     # 각도와 각속도 분리
+    #     target_angles = target_trajectory[:, :4]
+    #     target_velocities = target_trajectory[:, 4:]
+    #     subject_angles = subject_trajectory[:, :4]
+    #     subject_velocities = subject_trajectory[:, 4:]
         
-        # 엔드이펙터 위치 계산
-        target_ee_positions = np.zeros((len(target_angles), 3))
-        subject_ee_positions = np.zeros((len(subject_angles), 3))
+    #     # 엔드이펙터 위치 계산
+    #     target_ee_positions = np.zeros((len(target_angles), 3))
+    #     subject_ee_positions = np.zeros((len(subject_angles), 3))
         
-        for i in range(len(target_angles)):
-            angles_adj = target_angles[i].copy()
-            target_ee_positions[i] = calculate_end_effector_position(angles_adj)
+    #     for i in range(len(target_angles)):
+    #         angles_adj = target_angles[i].copy()
+    #         target_ee_positions[i] = calculate_end_effector_position(angles_adj)
         
-        for i in range(len(subject_angles)):
-            angles_adj = subject_angles[i].copy()
-            subject_ee_positions[i] = calculate_end_effector_position(angles_adj)
+    #     for i in range(len(subject_angles)):
+    #         angles_adj = subject_angles[i].copy()
+    #         subject_ee_positions[i] = calculate_end_effector_position(angles_adj)
         
-        # 호 길이 기반 매개변수화
-        def arc_length_parameterization(positions):
-            arc_lengths = np.zeros(len(positions))
-            for i in range(1, len(positions)):
-                # 현재 점과 이전 점 사이의 유클리드 거리 계산
-                arc_lengths[i] = arc_lengths[i-1] + np.linalg.norm(positions[i] - positions[i-1])
+    #     # 호 길이 기반 매개변수화
+    #     def arc_length_parameterization(positions):
+    #         arc_lengths = np.zeros(len(positions))
+    #         for i in range(1, len(positions)):
+    #             # 현재 점과 이전 점 사이의 유클리드 거리 계산
+    #             arc_lengths[i] = arc_lengths[i-1] + np.linalg.norm(positions[i] - positions[i-1])
             
-            # 정규화된 매개변수 (0에서 1)
-            if arc_lengths[-1] > 0:
-                params = arc_lengths / arc_lengths[-1]
-            else:
-                params = np.linspace(0, 1, len(positions))
+    #         # 정규화된 매개변수 (0에서 1)
+    #         if arc_lengths[-1] > 0:
+    #             params = arc_lengths / arc_lengths[-1]
+    #         else:
+    #             params = np.linspace(0, 1, len(positions))
             
-            return params
+    #         return params
         
-        # 타겟과 사용자 궤적의 호 길이 매개변수화
-        target_params = arc_length_parameterization(target_ee_positions)
-        subject_params = arc_length_parameterization(subject_ee_positions)
+    #     # 타겟과 사용자 궤적의 호 길이 매개변수화
+    #     target_params = arc_length_parameterization(target_ee_positions)
+    #     subject_params = arc_length_parameterization(subject_ee_positions)
         
-        # 균일한 매개변수 간격으로 샘플링할 포인트
-        uniform_params = np.linspace(0, 1, num_points)
+    #     # 균일한 매개변수 간격으로 샘플링할 포인트
+    #     uniform_params = np.linspace(0, 1, num_points)
         
-        # 재샘플링된 궤적을 저장할 배열
-        resampled_target = np.zeros((num_points, target_trajectory.shape[1]))
-        resampled_subject = np.zeros((num_points, subject_trajectory.shape[1]))
+    #     # 재샘플링된 궤적을 저장할 배열
+    #     resampled_target = np.zeros((num_points, target_trajectory.shape[1]))
+    #     resampled_subject = np.zeros((num_points, subject_trajectory.shape[1]))
         
-        for dim in range(target_trajectory.shape[1]):
-            # 타겟 궤적 스플라인 피팅
-            target_spline = CubicSpline(
-                target_params, 
-                target_trajectory[:, dim],
-                bc_type='natural'
-            )
-            resampled_target[:, dim] = target_spline(uniform_params)
+    #     for dim in range(target_trajectory.shape[1]):
+    #         # 타겟 궤적 스플라인 피팅
+    #         target_spline = CubicSpline(
+    #             target_params, 
+    #             target_trajectory[:, dim],
+    #             bc_type='natural'
+    #         )
+    #         resampled_target[:, dim] = target_spline(uniform_params)
             
-            # 사용자 궤적 스플라인 피팅
-            subject_spline = CubicSpline(
-                subject_params, 
-                subject_trajectory[:, dim],
-                bc_type='natural'
-            )
-            resampled_subject[:, dim] = subject_spline(uniform_params)
+    #         # 사용자 궤적 스플라인 피팅
+    #         subject_spline = CubicSpline(
+    #             subject_params, 
+    #             subject_trajectory[:, dim],
+    #             bc_type='natural'
+    #         )
+    #         resampled_subject[:, dim] = subject_spline(uniform_params)
         
-        # 클리핑 완화
-        for joint in range(4):
-            joint_min = self.joint_limits[joint][0]
-            joint_max = self.joint_limits[joint][1]
+    #     # 클리핑 완화
+    #     for joint in range(4):
+    #         joint_min = self.joint_limits[joint][0]
+    #         joint_max = self.joint_limits[joint][1]
             
-            # 물리적 한계 내로만 클리핑
-            resampled_target[:, joint] = np.clip(resampled_target[:, joint], joint_min, joint_max)
-            resampled_subject[:, joint] = np.clip(resampled_subject[:, joint], joint_min, joint_max)
+    #         # 물리적 한계 내로만 클리핑
+    #         resampled_target[:, joint] = np.clip(resampled_target[:, joint], joint_min, joint_max)
+    #         resampled_subject[:, joint] = np.clip(resampled_subject[:, joint], joint_min, joint_max)
         
-        return resampled_target, resampled_subject
+    #     return resampled_target, resampled_subject
 
-    def normalize_time_circle(self, target_trajectory, subject_trajectory):
-        """원형 궤적 특화 시간 정규화 (위상 기반)"""
-        num_points = max(len(target_trajectory), len(subject_trajectory))
+    # def normalize_time_circle(self, target_trajectory, subject_trajectory):
+    #     """원형 궤적 특화 시간 정규화 (위상 기반)"""
+    #     num_points = max(len(target_trajectory), len(subject_trajectory))
         
-        # 각도 데이터
-        target_angles = target_trajectory[:, :4]
-        subject_angles = subject_trajectory[:, :4]
+    #     # 각도 데이터
+    #     target_angles = target_trajectory[:, :4]
+    #     subject_angles = subject_trajectory[:, :4]
         
-        # 엔드이펙터 위치 계산
-        target_ee_positions = np.zeros((len(target_angles), 3))
-        subject_ee_positions = np.zeros((len(subject_angles), 3))
+    #     # 엔드이펙터 위치 계산
+    #     target_ee_positions = np.zeros((len(target_angles), 3))
+    #     subject_ee_positions = np.zeros((len(subject_angles), 3))
         
-        for i in range(len(target_angles)):
-            target_ee_positions[i] = calculate_end_effector_position(target_angles[i])
+    #     for i in range(len(target_angles)):
+    #         target_ee_positions[i] = calculate_end_effector_position(target_angles[i])
         
-        for i in range(len(subject_angles)):
-            subject_ee_positions[i] = calculate_end_effector_position(subject_angles[i])
+    #     for i in range(len(subject_angles)):
+    #         subject_ee_positions[i] = calculate_end_effector_position(subject_angles[i])
         
-        # 중심점 계산
-        target_center = np.mean(target_ee_positions, axis=0)
-        subject_center = np.mean(subject_ee_positions, axis=0)
+    #     # 중심점 계산
+    #     target_center = np.mean(target_ee_positions, axis=0)
+    #     subject_center = np.mean(subject_ee_positions, axis=0)
         
-        # 각 위치에서 중심까지의 벡터 계산
-        target_centered = target_ee_positions - target_center
-        subject_centered = subject_ee_positions - subject_center
+    #     # 각 위치에서 중심까지의 벡터 계산
+    #     target_centered = target_ee_positions - target_center
+    #     subject_centered = subject_ee_positions - subject_center
         
-        # 위상 각도 계산 (xy 평면에서)
-        target_phases = np.arctan2(target_centered[:, 1], target_centered[:, 0])
-        subject_phases = np.arctan2(subject_centered[:, 1], subject_centered[:, 0])
+    #     # 위상 각도 계산 (xy 평면에서)
+    #     target_phases = np.arctan2(target_centered[:, 1], target_centered[:, 0])
+    #     subject_phases = np.arctan2(subject_centered[:, 1], subject_centered[:, 0])
         
-        # 각도 연속성 보장
-        target_phases = np.unwrap(target_phases)
-        subject_phases = np.unwrap(subject_phases)
+    #     # 각도 연속성 보장
+    #     target_phases = np.unwrap(target_phases)
+    #     subject_phases = np.unwrap(subject_phases)
         
-        # 위상 정규화 (0~1 범위로)
-        if len(target_phases) > 1:
-            target_phase_norm = (target_phases - target_phases.min()) / (target_phases.max() - target_phases.min())
-        else:
-            target_phase_norm = np.array([0])
+    #     # 위상 정규화 (0~1 범위로)
+    #     if len(target_phases) > 1:
+    #         target_phase_norm = (target_phases - target_phases.min()) / (target_phases.max() - target_phases.min())
+    #     else:
+    #         target_phase_norm = np.array([0])
             
-        if len(subject_phases) > 1:
-            subject_phase_norm = (subject_phases - subject_phases.min()) / (subject_phases.max() - subject_phases.min())
-        else:
-            subject_phase_norm = np.array([0])
+    #     if len(subject_phases) > 1:
+    #         subject_phase_norm = (subject_phases - subject_phases.min()) / (subject_phases.max() - subject_phases.min())
+    #     else:
+    #         subject_phase_norm = np.array([0])
         
-        # 공통 위상 포인트 생성
-        common_phases = np.linspace(0, 1, num_points)
+    #     # 공통 위상 포인트 생성
+    #     common_phases = np.linspace(0, 1, num_points)
         
-        # 균일한 위상 간격에서의 인덱스 찾기
-        target_indices = np.zeros(num_points, dtype=int)
-        subject_indices = np.zeros(num_points, dtype=int)
+    #     # 균일한 위상 간격에서의 인덱스 찾기
+    #     target_indices = np.zeros(num_points, dtype=int)
+    #     subject_indices = np.zeros(num_points, dtype=int)
         
-        for i, phase in enumerate(common_phases):
-            target_idx = np.argmin(np.abs(target_phase_norm - phase))
-            subject_idx = np.argmin(np.abs(subject_phase_norm - phase))
+    #     for i, phase in enumerate(common_phases):
+    #         target_idx = np.argmin(np.abs(target_phase_norm - phase))
+    #         subject_idx = np.argmin(np.abs(subject_phase_norm - phase))
             
-            target_indices[i] = target_idx
-            subject_indices[i] = subject_idx
+    #         target_indices[i] = target_idx
+    #         subject_indices[i] = subject_idx
         
-        # 정규화된 궤적 생성
-        resampled_target = target_trajectory[target_indices]
-        resampled_subject = subject_trajectory[subject_indices]
+    #     # 정규화된 궤적 생성
+    #     resampled_target = target_trajectory[target_indices]
+    #     resampled_subject = subject_trajectory[subject_indices]
         
-        return resampled_target, resampled_subject
+    #     return resampled_target, resampled_subject
 
     def normalize_time(self, target_trajectory, subject_trajectory):
         """각 관절의 특징점을 기반으로 시간 정규화"""
@@ -301,9 +300,9 @@ class ModelBasedTrajectoryGenerator:
             
             # 매핑 함수
             time_map = PchipInterpolator(subject_params, target_params, extrapolate=True)
-            mapped_time = common_time  # 여기서는 직접 매핑하지 않고 다음 단계에서 사용
+            mapped_time = common_time
             
-            # 6. 보간 적용
+            # 보간 
             target_time = np.linspace(0, 1, len(target_joint))
             subject_time = np.linspace(0, 1, len(subject_joint))
             
@@ -312,17 +311,15 @@ class ModelBasedTrajectoryGenerator:
             resampled_target[:, joint] = target_interp(common_time)
             
             # 사용자 데이터를 타겟에 맞춰 보간
-            # 여기서 중요한 변경: 특징점 기반 매핑 적용
             mapped_subject_time = time_map(subject_time)
             subject_interp = PchipInterpolator(mapped_subject_time, subject_joint, extrapolate=True)
             resampled_subject[:, joint] = subject_interp(common_time)
         
-        # 각속도 처리 (관절과 유사하게)
+        # 각도와 유사하게 각속도 처리리
         target_velocities = target_trajectory[:, 4:]
         subject_velocities = subject_trajectory[:, 4:]
         
         for vel_idx in range(target_velocities.shape[1]):
-            # 간단한 선형 매핑 사용
             target_time = np.linspace(0, 1, len(target_velocities))
             subject_time = np.linspace(0, 1, len(subject_velocities))
             
@@ -355,7 +352,7 @@ class ModelBasedTrajectoryGenerator:
                                                 interpolation_weight * aligned_subject_velocities[i, joint]
 
         # 모델 입력 데이터를 각도 + 각속도로 결합
-        model_input = np.column_stack([interpolated_degrees, interpolated_velocities])  # (n_points, 8)
+        model_input = np.column_stack([interpolated_degrees, interpolated_velocities])
 
         # 모델 기반 관절 간 상호작용 적용
         with torch.no_grad():
@@ -686,9 +683,10 @@ class ModelBasedTrajectoryGenerator:
         )
         
         return final_df, results
-
-    def visualize_trajectories(self, target_df, user_df, generated_df, trajectory_type, generation_number=1):
-        """타겟과 사용자 궤적과 생성된 궤적을 시각화"""
+    
+    def visualize_trajectories(self, target_df, user_df, generated_df, trajectory_type, 
+                          generation_number=1, weight=None, score=None, rank=None):
+        """타겟과 사용자 궤적과 생성된 궤적을 시각화 (가중치와 평가 정보 포함)"""
         target_degrees = target_df[['deg1', 'deg2', 'deg3', 'deg4']].values
         user_degrees = user_df[['deg1', 'deg2', 'deg3', 'deg4']].values
         generated_degrees = generated_df[['deg1', 'deg2', 'deg3', 'deg4']].values
@@ -736,7 +734,13 @@ class ModelBasedTrajectoryGenerator:
             ax.grid(True)
             ax.legend()
 
-        fig.suptitle(f'Trajectory_type: {trajectory_type}', fontsize=16)
+        title = f'Trajectory type: {trajectory_type}'
+        if score is not None:
+            title += f', Score: {score:.2f}'
+        if rank is not None:
+            title += f', Rank: {rank}'
+        
+        fig.suptitle(title, fontsize=16)
         plt.tight_layout()
         plt.subplots_adjust(top=0.92)
         plt.show()
@@ -744,7 +748,7 @@ class ModelBasedTrajectoryGenerator:
         self.save_generated_trajectory(generated_df, trajectory_type, generation_number)
         
         return generated_df
-    
+
     def save_generated_trajectory(self, generated_df, classification_result, generation_number=1):
         """생성된 궤적을 지정된 형식으로 저장"""
         generation_dir = os.path.join(os.getcwd(), "generation_trajectory")

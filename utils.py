@@ -1,14 +1,6 @@
-import os
-import csv
-import random
-import torch
 import numpy as np
 import pandas as pd
-from scipy.interpolate import interp1d
-from fastdtw import fastdtw
-from scipy.spatial.distance import euclidean
-from sklearn.preprocessing import StandardScaler
-import matplotlib.pyplot as plt
+from sympy import symbols, cos, sin, Matrix, pi
 
 ##########################
 # 데이터 전처리
@@ -112,3 +104,29 @@ def calculate_jacobian_np(q1, q2, q3, q4, l1=0.26, l2=0.31):
         [1, 0, 0, cos_q2*cos_q3 - sin_q2*sin_q3]])
 
     return J
+
+# 자코비안 역행렬
+def calculate_jacobian_inverse(deg1, deg2, deg3, deg4, l1=0.26, l2=0.31, k_value=0.01):
+
+    # 라디안 변환
+    q1, q2, q3, q4 = np.radians([deg1, deg2, deg3, deg4])
+
+    # 자코비안 계산
+    J_np = calculate_jacobian_np(q1, q2, q3, q4)
+    
+    # 자코비안 전치
+    JJT_np = np.dot(J_np, J_np.T)
+
+    # k2*I 계산
+    reg_term = k_value**2 * np.eye(JJT_np.shape[0])
+
+    # 덧셈 
+    A_np = JJT_np + reg_term
+
+    # A_np 역행렬 계산
+    A_inv_np = np.linalg.inv(A_np)
+    
+    # 자코비안 전치에 A_np 역행렬 곱
+    J_inv_np = np.dot(J_np.T, A_inv_np)
+    
+    return J_inv_np

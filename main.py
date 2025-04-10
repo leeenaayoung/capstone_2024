@@ -31,15 +31,40 @@ class RankBasedGenerator:
             
         return weight_map[rank]
     
+    # def generate_trajectory_by_rank(self, target_df, user_df, trajectory_type, score=None, rank=None):
+    #     """ 점수 또는 등급에 따라 궤적 생성 """
+    #     # 등급 결정
+    #     rank = convert_score_to_rank(score)
+            
+    #     # 등급에 따른 가중치 결정
+    #     weight = self.get_weight_from_rank(rank)
+        
+    #     print(f"생성 등급: {rank}등급 (가중치: {weight})")
+        
+    #     # 단일 가중치 배열로 설정
+    #     weights = [weight]
+        
+    #     # 궤적 생성
+    #     generated_df, results = self.generator.interpolate_trajectory(
+    #         target_df, user_df, trajectory_type, weights=weights
+    #     )
+        
+    #     # 결과 시각화
+    #     self.generator.visualize_trajectories(
+    #         target_df, user_df, generated_df, trajectory_type
+    #     )
+        
+    #     return generated_df, weight
+    
     def generate_trajectory_by_rank(self, target_df, user_df, trajectory_type, score=None, rank=None):
         """ 점수 또는 등급에 따라 궤적 생성 """
         # 등급 결정
-        # if rank is None and score is not None:
-        rank = convert_score_to_rank(score)
-        # elif rank is None and score is None:
-        #     # 기본값: 중간 등급
-        #     rank = 2
-            
+        if rank is None and score is not None:
+            rank = convert_score_to_rank(score)
+        elif rank is None:
+            # 기본값 설정
+            rank = 2
+                
         # 등급에 따른 가중치 결정
         weight = self.get_weight_from_rank(rank)
         
@@ -53,13 +78,41 @@ class RankBasedGenerator:
             target_df, user_df, trajectory_type, weights=weights
         )
         
-        # 결과 시각화
+        # 결과 시각화 (가중치와 평가 정보 포함)
         self.generator.visualize_trajectories(
-            target_df, user_df, generated_df, trajectory_type
+            target_df, user_df, generated_df, trajectory_type,
+            weight=weight, score=score, rank=rank
         )
         
         return generated_df, weight
     
+    # def evaluate_and_generate(self, target_df, user_df, trajectory_type):
+    #     """ 사용자 궤적 평가 후 등급에 따라 궤적 생성 """
+    #     # 사용자 궤적 평가 수행
+    #     print(f"\n사용자 궤적 평가중 ({trajectory_type})...")
+    #     evaluation_result = self.evaluator.evaluate_trajectory(user_df, trajectory_type)
+        
+    #     # 정답 데이터 로드 및 점수 계산
+    #     base_dir = os.getcwd()
+    #     try:
+    #         from evaluate import load_golden_evaluation_results, calculate_score_with_golden
+    #         golden_dict = load_golden_evaluation_results(trajectory_type, base_dir)
+    #         score = calculate_score_with_golden(evaluation_result, golden_dict)
+    #     except Exception as e:
+    #         print(f"정답 평가 오류: {str(e)}. 기본 점수 50으로 설정합니다.")
+    #         score = 50.0
+        
+    #     # 등급 계산
+    #     rank = convert_score_to_rank(score)
+    #     print(f"\n평가 결과: {score:.2f}점 ({rank}등급)")
+        
+    #     # 등급 기반 궤적 생성
+    #     generated_df, weight = self.generate_trajectory_by_rank(
+    #         target_df, user_df, trajectory_type, score=score
+    #     )
+        
+    #     return generated_df, score, rank, weight
+
     def evaluate_and_generate(self, target_df, user_df, trajectory_type):
         """ 사용자 궤적 평가 후 등급에 따라 궤적 생성 """
         # 사용자 궤적 평가 수행
@@ -82,7 +135,7 @@ class RankBasedGenerator:
         
         # 등급 기반 궤적 생성
         generated_df, weight = self.generate_trajectory_by_rank(
-            target_df, user_df, trajectory_type, score=score
+            target_df, user_df, trajectory_type, score=score, rank=rank
         )
         
         return generated_df, score, rank, weight
