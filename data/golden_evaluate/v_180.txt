@@ -1,2 +1,2 @@
-going: {'arc_radius': 0.69, 'arc_angle': 110.99999999999997, 'arc_roundness': 9.737300069667989e-17}
-returning: {'arc_radius': 0.6900000000000001, 'arc_angle': 113.0, 'arc_roundness': 1.5671159774123474e-16}
+going: {'arc_radius': 0.69, 'arc_angle': 110.99999999999997, 'arc_roundness': 9.834191013992526e-17, 'linearity_vertical': 1.0, 'linearity_horizontal': 1.0}
+returning: {'arc_radius': 0.6899999999999998, 'arc_angle': 114.00000000000001, 'arc_roundness': 2.292859597324374e-16, 'linearity_vertical': 1.0, 'linearity_horizontal': 1.0}

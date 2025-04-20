@@ -161,95 +161,74 @@ class TrajectoryEvaluator:
         return np.array([cx, cy]), r
 
     # 호 궤적 평가
-    def debug_plot_3d(self, points_3d, plane_origin, ex, ey, ez, center_3d, radius_3d):
-        fig = plt.figure()
+    def debug_plot_3d(self, points_3d, plane_origin, ex, ey, normal, center_3d, radius_3d):
+        other = getattr(self, 'other_points_3d', None)
+        vecs = (other if other is not None else points_3d) - plane_origin
+
+        fig = plt.figure(figsize=(8, 6))
         ax = fig.add_subplot(projection='3d')
 
-        # "나머지" 점들(전체 궤적 등)을 작은 파란 점으로 표시
-        other_points_3d = getattr(self, 'other_points_3d', None)
-        if other_points_3d is not None and len(other_points_3d) > 0:
-            ax.scatter(
-                other_points_3d[:, 0],
-                other_points_3d[:, 1],
-                other_points_3d[:, 2],
-                color='blue',
-                s=10,   # 작은 점
-                marker='o',
-                label='Other Points'
-            )
+        # 전체 궤적 점
+        if other is not None:
+            ax.scatter(other[:,0], other[:,1], other[:,2],
+                    color='blue', s=10, alpha=0.6, label='Other Points')
+        ax.scatter(points_3d[:,0], points_3d[:,1], points_3d[:,2],
+                color='red', s=50, label='Main 3 Points')
 
-        # 빨간색으로 3개 주요 점 (시작, 중간, 끝)
-        ax.scatter(
-            points_3d[:, 0],
-            points_3d[:, 1],
-            points_3d[:, 2],
-            color='red',
-            s=100,
-            marker='o',
-            label='Main 3 Points'
-        )
+        # 메인 평면 (ex, ey)
+        plane_size = radius_3d * 1.5
+        u = np.linspace(-plane_size, plane_size, 20)
+        v = np.linspace(-plane_size, plane_size, 20)
+        U, V = np.meshgrid(u, v)
+        Pm = plane_origin + U[...,None]*ex + V[...,None]*ey
+        ax.plot_surface(Pm[...,0], Pm[...,1], Pm[...,2],
+                        color='cyan', alpha=0.2, label='Main Plane')
 
-        # 평면 투영
-        plane_size = max(radius_3d * 1.5, 0.5)
-        n_grid = 20
-        u_vals = np.linspace(-plane_size, plane_size, n_grid)
-        v_vals = np.linspace(-plane_size, plane_size, n_grid)
-        plane_xyz = np.zeros((n_grid, n_grid, 3))
-        for i, u in enumerate(u_vals):
-            for j, v in enumerate(v_vals):
-                plane_xyz[i, j] = plane_origin + u*ex + v*ey
+        # 수직 평면 (ey, normal)
+        Pv = plane_origin + U[...,None]*ey + V[...,None]*normal
+        ax.plot_surface(Pv[...,0], Pv[...,1], Pv[...,2],
+                        color='magenta', alpha=0.2, label='Vertical Plane')
 
-        Xp = plane_xyz[:, :, 0]
-        Yp = plane_xyz[:, :, 1]
-        Zp = plane_xyz[:, :, 2]
-        ax.plot_surface(Xp, Yp, Zp, alpha=0.3)
+        # 수평 평면 (ex, normal)
+        Ph = plane_origin + U[...,None]*ex + V[...,None]*normal
+        ax.plot_surface(Ph[...,0], Ph[...,1], Ph[...,2],
+                        color='green', alpha=0.2, label='Horizontal Plane')
 
-        # 피팅된 원 그리기
-        t_samples = np.linspace(0, 2*np.pi, 100)
-        circle_pts = []
-        for t in t_samples:
-            xx = radius_3d * np.cos(t)
-            yy = radius_3d * np.sin(t)
-            c3d = center_3d + xx*ex + yy*ey
-            circle_pts.append(c3d)
-        circle_pts = np.array(circle_pts)
-        ax.plot(
-            circle_pts[:, 0],
-            circle_pts[:, 1],
-            circle_pts[:, 2],
-            color='orange',
-            label='Fitted Arc'
-        )
+        # 각 평면 위에 투영된 점들
+        # Vertical projection
+        s_v = vecs.dot(ey)
+        t_v = vecs.dot(normal)
+        proj_v = plane_origin + np.outer(s_v, ey) + np.outer(t_v, normal)
+        ax.scatter(proj_v[:,0], proj_v[:,1], proj_v[:,2],
+                color='magenta', marker='^', s=40, label='Proj Vert')
+
+        # Horizontal projection
+        s_h = vecs.dot(ex)
+        t_h = vecs.dot(normal)
+        proj_h = plane_origin + np.outer(s_h, ex) + np.outer(t_h, normal)
+        ax.scatter(proj_h[:,0], proj_h[:,1], proj_h[:,2],
+                color='green', marker='s', s=40, label='Proj Horz')
+
+        # 피팅된 원
+        theta = np.linspace(0, 2*np.pi, 100)
+        circ = center_3d + np.outer(np.cos(theta)*radius_3d, ex) \
+                        + np.outer(np.sin(theta)*radius_3d, ey)
+        ax.plot(circ[:,0], circ[:,1], circ[:,2],
+                color='orange', label='Fitted Arc')
 
         # 축 비율 맞추기
-        xs = points_3d[:, 0]
-        ys = points_3d[:, 1]
-        zs = points_3d[:, 2]
+        all_pts = np.vstack([points_3d,
+                            proj_v if other is not None else proj_v,
+                            proj_h if other is not None else proj_h])
+        xs, ys, zs = all_pts[:,0], all_pts[:,1], all_pts[:,2]
+        m = np.max([xs.max()-xs.min(), ys.max()-ys.min(), zs.max()-zs.min()]) / 2
+        cx, cy, cz = np.mean(xs), np.mean(ys), np.mean(zs)
+        ax.set_xlim(cx-m, cx+m)
+        ax.set_ylim(cy-m, cy+m)
+        ax.set_zlim(cz-m, cz+m)
 
-        if other_points_3d is not None and len(other_points_3d) > 0:
-            xs = np.concatenate([xs, other_points_3d[:, 0]])
-            ys = np.concatenate([ys, other_points_3d[:, 1]])
-            zs = np.concatenate([zs, other_points_3d[:, 2]])
-
-        max_range = np.array([
-            xs.max() - xs.min(),
-            ys.max() - ys.min(),
-            zs.max() - zs.min()
-        ]).max()
-        mid_x = (xs.max() + xs.min()) / 2
-        mid_y = (ys.max() + ys.min()) / 2
-        mid_z = (zs.max() + zs.min()) / 2
-
-        ax.set_xlim(mid_x - max_range/2, mid_x + max_range/2)
-        ax.set_ylim(mid_y - max_range/2, mid_y + max_range/2)
-        ax.set_zlim(mid_z - max_range/2, mid_z + max_range/2)
-
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        ax.set_zlabel("Z")
-        plt.title("Exact Circle from 3 Points (3D Visualization)")
-
-        ax.legend(loc='best')
+        ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+        ax.legend()
         plt.show()
 
 
@@ -361,6 +340,20 @@ class TrajectoryEvaluator:
         arc_roundness_3pts = float(np.std(dists_3))
 
         return arc_angle_deg, arc_roundness_3pts
+    
+    # ① PCA 기반 선형성 계산 함수 추가
+    def calc_linearity_pca(self, pts, origin, axis1, axis2):
+        """
+        pts: (N×3) 3D 점들
+        origin: 평면 원점
+        axis1, axis2: 투영 축 벡터 (예: ey, ez 또는 ex, ez)
+        반환: 1=완벽 직선, 0=직선성 없음
+        """
+        V = pts - origin
+        P = np.stack([V.dot(axis1), V.dot(axis2)], axis=1)   # (N×2)
+        Pc = P - P.mean(axis=0)
+        _, S, _ = np.linalg.svd(Pc, full_matrices=False)
+        return 0.0 if S[0] < 1e-12 else float(1 - S[1]/S[0])
 
     # -------------------------------------------------
     # (E) 왕복 궤적에서 (시작/중간/끝) 3점 뽑아 정확히 원을 구함
@@ -457,19 +450,32 @@ class TrajectoryEvaluator:
             # (c) 전체 점 편차(새로운 arc_roundness)
             dists_all = np.linalg.norm(all_segment_points - center_3d, axis=1)
             arc_roundness_all = float(np.std(dists_all))
+            
+             # ② 선형성 계산 추가
+            lin_v = self.calc_linearity_pca(
+                all_segment_points, plane_origin,
+                ey,  # “수직” 평면 기준 축
+                normal 
+            )
+            lin_h = self.calc_linearity_pca(
+                all_segment_points, plane_origin,
+                ex,  # “수평” 평면 기준 축
+                normal 
+            )
 
             return {
-                'arc_radius': float(radius_3d),
-                'arc_angle': float(arc_angle),
-                # 3점만의 편차 vs 전체 편차
-                'arc_roundness_3pts': arc_roundness_3pts,     
-                'arc_roundness': arc_roundness_all,           
-                'plane_origin': plane_origin,
-                'ex': ex,
-                'ey': ey,
-                'ez': normal,
-                'center_3d': center_3d,
-                'points_3d': triple_3
+                'arc_radius':            float(radius_3d),
+                'arc_angle':             float(arc_angle),
+                'arc_roundness':         arc_roundness_all,
+                'arc_roundness_3pts':    arc_roundness_3pts,
+                'linearity_vertical':    lin_v,
+                'linearity_horizontal':  lin_h,
+                'plane_origin':          plane_origin,
+                'ex':                    ex,
+                'ey':                    ey,
+                'ez':                    normal,
+                'center_3d':             center_3d,
+                'points_3d':             triple_3
             }
 
         going_result = evaluate_segment(going_pts, going_3)
@@ -501,14 +507,18 @@ class TrajectoryEvaluator:
         # (6) 결과 반환
         return {
             'going': {
-                'arc_radius': going_result['arc_radius'],
-                'arc_angle': going_result['arc_angle'],
-                'arc_roundness': going_result['arc_roundness'],           
+                'arc_radius':            going_result['arc_radius'],
+                'arc_angle':             going_result['arc_angle'],
+                'arc_roundness':         going_result['arc_roundness'],
+                'linearity_vertical':    going_result['linearity_vertical'],
+                'linearity_horizontal':  going_result['linearity_horizontal'],
             },
             'returning': {
-                'arc_radius': returning_result['arc_radius'],
-                'arc_angle': returning_result['arc_angle'],
-                'arc_roundness': returning_result['arc_roundness'],       
+                'arc_radius':            returning_result['arc_radius'],
+                'arc_angle':             returning_result['arc_angle'],
+                'arc_roundness':         returning_result['arc_roundness'],
+                'linearity_vertical':    returning_result['linearity_vertical'],
+                'linearity_horizontal':  returning_result['linearity_horizontal'],
             }
         }
 
@@ -516,152 +526,101 @@ class TrajectoryEvaluator:
     # 원 궤적 평가
     ####################
     def evaluate_circle(self, user_df, visualize=False):
-        """
-        1) (deg1..deg4) -> 스무딩 -> FK(3D 좌표)
-        2) PCA/SVD로 평면 정의
-        3) 그 평면에 모든 3D 점 투영 -> 2D bounding box 계산
-        4) circle_height = y_max - y_min
-        5) circle_ratio = (x_max - x_min) / (y_max - y_min)
-        6) circle_radius = 여기서는 ( (x_range + y_range) / 4 ) 로 예시
-           (x_range=y_range이면, circle_radius = x_range/2)
-        7) start_end_distance = 3D 첫 점과 마지막 점 거리
-        8) 시각화(옵션) → 투영된 평면 + 모든 점 표시
-        """
-        # (A) 데이터 추출 & 스무딩
         angle_data = user_df[['deg1','deg2','deg3','deg4']].values
-        # smoothed = self.smooth_data(angle_data)
-
-        # (B) FK -> 3D
         points_3d = np.array([calculate_end_effector_position(deg) for deg in angle_data])
         if len(points_3d) < 2:
-            print("점이 2개 미만.")
-            return {
-                'circle_height': 0.0,
-                'circle_ratio': 0.0,
-                'circle_radius': 0.0,
-                'start_end_distance': 0.0
-            }
+            return {k: 0.0 for k in ['circle_height','circle_ratio','circle_radius','start_end_distance','linearity_vertical','linearity_horizontal']}
 
-        # (C) PCA/SVD로 평면 찾기
-        centroid = np.mean(points_3d, axis=0)
-        M = points_3d - centroid
+        origin = points_3d.mean(axis=0)
+        M = points_3d - origin
         _, _, Vt = np.linalg.svd(M, full_matrices=False)
-        plane_normal = Vt[-1, :]
-        plane_normal /= (np.linalg.norm(plane_normal) + 1e-12)
+        ez = Vt[-1] / (np.linalg.norm(Vt[-1]) + 1e-12)
+        ex = Vt[0]  / (np.linalg.norm(Vt[0])  + 1e-12)
+        ey = Vt[1]  / (np.linalg.norm(Vt[1])  + 1e-12)
 
-        plane_origin = centroid.copy()
-        ex = Vt[0, :] / (np.linalg.norm(Vt[0, :]) + 1e-12)
-        ey = Vt[1, :] / (np.linalg.norm(Vt[1, :]) + 1e-12)
-        ez = plane_normal
+        # 2D projection (circle metrics)
+        def proj2d(pt): v=pt-origin; return np.array([v.dot(ex), v.dot(ey)])
+        pts2d = np.array([proj2d(p) for p in points_3d])
+        x_vals,y_vals = pts2d[:,0], pts2d[:,1]
+        x_min,x_max = x_vals.min(), x_vals.max()
+        y_min,y_max = y_vals.min(), y_vals.max()
+        x_range,y_range = x_max-x_min, y_max-y_min
 
-        # (D) 3D -> 2D 투영
-        def project_2d(pt):
-            vec = pt - plane_origin
-            return np.array([np.dot(vec, ex), np.dot(vec, ey)])
-        points_2d = np.array([project_2d(p) for p in points_3d])
-
-        x_vals = points_2d[:,0]
-        y_vals = points_2d[:,1]
-
-        # (E) bounding box
-        x_min, x_max = np.min(x_vals), np.max(x_vals)
-        y_min, y_max = np.min(y_vals), np.max(y_vals)
-        x_range = x_max - x_min
-        y_range = y_max - y_min
-
-        # (F) circle_height, circle_ratio, circle_radius
         circle_height = y_range
-        circle_ratio  = (x_range / y_range) if y_range > 1e-12 else 0.0
-        # 예시: 두 범위의 평균 길이/2 => ( (x_range + y_range)/2 ) / 2 = (x_range+y_range)/4
-        # 다른 방식(예: (min(x_range,y_range))/2 )도 가능
-        circle_radius = (x_range + y_range)/4
+        circle_ratio  = (x_range/y_range) if y_range>1e-12 else 0.0
+        circle_radius = (x_range+y_range)/4
+        start_end_distance = np.linalg.norm(points_3d[0]-points_3d[-1])
 
-        # (G) start_end_distance (3D)
-        start_end_distance = 0.0
-        if len(points_3d) >= 2:
-            start_end_distance = np.linalg.norm(points_3d[0] - points_3d[-1])
+        def calc_linearity_pca(axis):
+            # points_3d, origin, ez는 evaluate_circle 내부에서 이미 계산된 것들
+            V = points_3d - origin
+            s = V.dot(axis)    # 주축 방향 성분
+            t = V.dot(ez)      # 법선 방향 성분
+            P2 = np.stack([s, t], axis=1)
 
-        # (H) 시각화
+            # centering
+            P2_centered = P2 - P2.mean(axis=0)
+
+            # SVD
+            _, S, _ = np.linalg.svd(P2_centered, full_matrices=False)
+            sigma1, sigma2 = S[0], S[1]
+
+            # 안전장치
+            if sigma1 < 1e-12:
+                return 0.0
+
+            return float(1 - sigma2/sigma1)
+
+        linearity_vertical   = calc_linearity_pca(ey)
+        linearity_horizontal = calc_linearity_pca(ex)
+
         if visualize:
-            self.debug_plot_circle(points_3d, plane_origin, ex, ey, ez, x_min, x_max, y_min, y_max)
+            self.debug_plot_circle(points_3d, origin, ex, ey, ez, x_min, x_max, y_min, y_max)
 
         return {
-            'circle_height': float(circle_height),
-            'circle_ratio': float(circle_ratio),
-            'circle_radius': float(circle_radius),
-            'start_end_distance': float(start_end_distance)
+            'circle_height': circle_height,
+            'circle_ratio': circle_ratio,
+            'circle_radius': circle_radius,
+            'start_end_distance': start_end_distance,
+            'linearity_vertical': linearity_vertical,
+            'linearity_horizontal': linearity_horizontal
         }
 
-    def debug_plot_circle(
-        self,
-        points_3d,
-        plane_origin, ex, ey, ez,
-        x_min, x_max, y_min, y_max
-    ):
-        """
-        시각화(옵션):
-         - points_3d (파랑 점)
-         - plane_origin + ex,ey 평면 (반투명)
-         - bounding box 시각화 (2D 상 사각형 -> 3D에 복원 가능)
-           * 여기에 '진짜 원'은 그리지 않음 (최소제곱 피팅X),
-             원이라기보다는 bounding box만 표현 가능.
-        """
-        fig = plt.figure()
+    def debug_plot_circle(self, points_3d, origin, ex, ey, ez, x_min, x_max, y_min, y_max):
+        vecs = points_3d - origin
+        fig = plt.figure(figsize=(12, 8))
         ax = fig.add_subplot(projection='3d')
 
-        # (1) 전체 점
-        ax.scatter(points_3d[:,0], points_3d[:,1], points_3d[:,2], color='blue', s=10, label='All Points')
+        # 1) 원래 3D 점
+        ax.scatter(points_3d[:,0], points_3d[:,1], points_3d[:,2], s=10, alpha=0.6, label='Original')
 
-        # (2) 평면
-        plane_size = max((x_max - x_min)*1.5, (y_max-y_min)*1.5, 0.5)
-        n_grid = 20
-        u_vals = np.linspace(-plane_size, plane_size, n_grid)
-        v_vals = np.linspace(-plane_size, plane_size, n_grid)
-        plane_xyz = np.zeros((n_grid, n_grid, 3))
-        for i,u in enumerate(u_vals):
-            for j,v in enumerate(v_vals):
-                plane_xyz[i,j] = plane_origin + u*ex + v*ey
-        Xp = plane_xyz[:,:,0]
-        Yp = plane_xyz[:,:,1]
-        Zp = plane_xyz[:,:,2]
-        ax.plot_surface(Xp, Yp, Zp, alpha=0.3)
+        # 2) 기준 평면 (ex,ey)
+        plane_size = max(x_max-x_min, y_max-y_min)*1.2
+        u = np.linspace(-plane_size, plane_size, 20)
+        v = np.linspace(-plane_size, plane_size, 20)
+        U,V = np.meshgrid(u, v)
+        P_main = origin + U[...,None]*ex + V[...,None]*ey
+        ax.plot_surface(P_main[...,0], P_main[...,1], P_main[...,2], alpha=0.2, color='cyan', label='Main Plane')
 
-        # (3) bounding box를 3D로 표시(선택 사항):
-        #   2D에서 x_min..x_max, y_min..y_max 사각형을 3D로 복원
-        corners_2d = [
-            [x_min, y_min],
-            [x_max, y_min],
-            [x_max, y_max],
-            [x_min, y_max],
-            [x_min, y_min]  # 닫기 위해
-        ]
-        # 3D로 변환
-        corners_3d = []
-        for x2d, y2d in corners_2d:
-            pt3d = plane_origin + x2d*ex + y2d*ey
-            corners_3d.append(pt3d)
-        corners_3d = np.array(corners_3d)
-        ax.plot(
-            corners_3d[:,0], corners_3d[:,1], corners_3d[:,2],
-            color='orange', label='Bounding Box'
-        )
+        # 3) 수직 평면: (ey, ez)
+        P_vert = origin + U[...,None]*ey + V[...,None]*ez
+        ax.plot_surface(P_vert[...,0], P_vert[...,1], P_vert[...,2], alpha=0.2, color='red',   label='Vertical Plane')
 
-        # 축 비율 맞추기
-        xs = points_3d[:,0]
-        ys = points_3d[:,1]
-        zs = points_3d[:,2]
-        max_range = np.array([xs.max()-xs.min(), ys.max()-ys.min(), zs.max()-zs.min()]).max()
-        mid_x = (xs.max()+xs.min())*0.5
-        mid_y = (ys.max()+ys.min())*0.5
-        mid_z = (zs.max()+zs.min())*0.5
-        ax.set_xlim(mid_x - max_range/2, mid_x + max_range/2)
-        ax.set_ylim(mid_y - max_range/2, mid_y + max_range/2)
-        ax.set_zlim(mid_z - max_range/2, mid_z + max_range/2)
+        # 4) 수평 평면: (ex, ez)
+        P_horiz = origin + U[...,None]*ex + V[...,None]*ez
+        ax.plot_surface(P_horiz[...,0], P_horiz[...,1], P_horiz[...,2], alpha=0.2, color='green', label='Horizontal Plane')
 
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        ax.set_zlabel("Z")
-        ax.set_title("Projection bounding box (No circle fitting)")
+        # 5) 투영된 점들: Vertical plane
+        s_v = vecs.dot(ey); t_v = vecs.dot(ez)
+        proj_v = origin + np.outer(s_v, ey) + np.outer(t_v, ez)
+        ax.scatter(proj_v[:,0], proj_v[:,1], proj_v[:,2], s=20, alpha=0.8, label='Proj Vert')
+
+        # 6) 투영된 점들: Horizontal plane
+        s_h = vecs.dot(ex); t_h = vecs.dot(ez)
+        proj_h = origin + np.outer(s_h, ex) + np.outer(t_h, ez)
+        ax.scatter(proj_h[:,0], proj_h[:,1], proj_h[:,2], s=20, alpha=0.8, label='Proj Horz')
+
+        ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
         ax.legend()
         plt.show()
     
@@ -704,7 +663,7 @@ def load_golden_evaluation_results(golden_type: str, base_dir: str) -> dict:
       returning: {'arc_radius': 0.5863, ...}
     => going, returning 둘 다 실제 dict로 파싱
     """
-    golden_eval_dir = os.path.join(base_dir, "data/golden_evaluate")
+    golden_eval_dir = os.path.join(base_dir, "golden_evaluate")
     file_name = golden_type + ".txt"
     file_path = os.path.join(golden_eval_dir, file_name)
 

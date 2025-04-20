@@ -1,3 +1,3 @@
-line_degree: 53.2647
-line_height: 0.5152
-line_length: 2.3168
+line_degree: 53.5206
+line_height: 0.5134
+line_length: 1.6911

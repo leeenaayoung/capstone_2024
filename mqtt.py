@@ -187,21 +187,6 @@ def process_interpolated_trajectory():
     else:
         print(f"[Error] MQTT publish failed: {res.rc}")
 
-    # 4) 보간된 전체 궤적 Unity 전송
-    with open(latest, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    if unity_sock:
-        for line in lines:
-            try:
-                unity_sock.sendall(line.strip().encode('utf-8'))
-                time.sleep(0.005)  # 과부하 방지
-            except Exception as e:
-                print("Error sending to Unity:", e)
-                break
-        print(f"[Interpolation] Sent {len(lines)} lines to Unity")
-    else:
-        print("[Error] Unity socket not available")
-
 # --- MQTT 시작 & 메인 루프 ---
 client.connect(broker_address, mqtt_port)
 client.loop_start()
