@@ -22,52 +22,6 @@ class TrajectoryEvaluator:
             }
         }
     
-    # def smooth_data(self, data, smoothing_factor=0.5, degree=3):
-    #     """ 스플라인 스무딩을 사용하여 로봇 관절 각도와 각속도 데이터 스무딩 """
-    #     is_dataframe_input = isinstance(data, pd.DataFrame)
-        
-    #     # NumPy 배열인 경우 DataFrame으로 변환
-    #     if not is_dataframe_input:
-    #         columns = []
-    #         if data.shape[1] >= 4:
-    #             columns += [f'deg{i+1}' for i in range(4)]
-    #         if data.shape[1] >= 8:
-    #             columns += [f'degsec{i+1}' for i in range(4)]
-    #         data = pd.DataFrame(data, columns=columns)
-            
-    #     # 원본 데이터 복사
-    #     smoothed_df = data.copy()
-        
-    #     # 각 열에 대해 스플라인 스무딩 적용
-    #     for col in ['deg1', 'deg2', 'deg3', 'deg4', 'degsec1', 'degsec2', 'degsec3', 'degsec4']:
-    #         if col in data.columns:
-    #             try:
-    #                 # 시간 인덱스 생성
-    #                 x = np.arange(len(data))
-    #                 y = data[col].values
-                    
-    #                 # 데이터의 규모에 따라 스무딩 매개변수 조정
-    #                 s = smoothing_factor * len(data)
-    #                 spline = UnivariateSpline(x, y, k=degree, s=s)
-    #                 smoothed_df[col] = spline(x)
-                    
-    #                 # 각속도 열을 스무딩할 때 물리적 제약 고려
-    #                 if col.startswith('degsec'):
-    #                     angle_col = 'deg' + col[6:]
-    #                     if angle_col in data.columns:
-    #                         pass
-    #             except Exception as e:
-    #                 print(f"Error smoothing column {col}: {str(e)}")
-    #                 # 오류 발생 시 원본 값 유지
-        
-    #     # NumPy 배열로 반환
-    #     if 'deg1' in smoothed_df.columns:
-    #         cols_to_return = [col for col in ['deg1', 'deg2', 'deg3', 'deg4'] if col in smoothed_df.columns]
-    #         return smoothed_df[cols_to_return].values
-    #     else:
-    #         # 열 이름이 맞지 않는 경우
-    #         return smoothed_df.values
-    
     # 직선 궤적 평가
     def evaluate_line(self, user_df):
         # 각도 데이터 추출 및 스무딩
@@ -704,7 +658,7 @@ def load_golden_evaluation_results(golden_type: str, base_dir: str) -> dict:
       returning: {'arc_radius': 0.5863, ...}
     => going, returning 둘 다 실제 dict로 파싱
     """
-    golden_eval_dir = os.path.join(base_dir, "data/golden_evaluate")
+    golden_eval_dir = os.path.join(base_dir, "golden_evaluate")
     file_name = golden_type + ".txt"
     file_path = os.path.join(golden_eval_dir, file_name)
 
@@ -715,16 +669,13 @@ def load_golden_evaluation_results(golden_type: str, base_dir: str) -> dict:
     with open(file_path, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
-            if not line:
+            if not line or ':' not in line:
                 continue
-            if ':' not in line:
-                continue
-            # key: val_str 분할 (첫 콜론만)
+
             key, val_str = line.split(':', 1)
             key = key.strip()
             val_str = val_str.strip()
 
-            # 만약 '{...}' 형태면 dict로 파싱
             if val_str.startswith('{') and val_str.endswith('}'):
                 try:
                     parsed = ast.literal_eval(val_str)
@@ -732,7 +683,6 @@ def load_golden_evaluation_results(golden_type: str, base_dir: str) -> dict:
                     continue
                 except:
                     pass
-            # float 변환 or 문자열
             try:
                 val = float(val_str)
             except ValueError:
@@ -740,6 +690,43 @@ def load_golden_evaluation_results(golden_type: str, base_dir: str) -> dict:
             golden_dict[key] = val
 
     return golden_dict
+
+    # golden_eval_dir = os.path.join(base_dir, "data/golden_evaluate")
+    # file_name = golden_type + ".txt"
+    # file_path = os.path.join(golden_eval_dir, file_name)
+
+    # if not os.path.exists(file_path):
+    #     raise FileNotFoundError(f"No evaluation file found for {golden_type} at {file_path}")
+
+    # golden_dict = {}
+    # with open(file_path, 'r', encoding='utf-8') as f:
+    #     for line in f:
+    #         line = line.strip()
+    #         if not line:
+    #             continue
+    #         if ':' not in line:
+    #             continue
+    #         # key: val_str 분할 (첫 콜론만)
+    #         key, val_str = line.split(':', 1)
+    #         key = key.strip()
+    #         val_str = val_str.strip()
+
+    #         # 만약 '{...}' 형태면 dict로 파싱
+    #         if val_str.startswith('{') and val_str.endswith('}'):
+    #             try:
+    #                 parsed = ast.literal_eval(val_str)
+    #                 golden_dict[key] = parsed
+    #                 continue
+    #             except:
+    #                 pass
+    #         # float 변환 or 문자열
+    #         try:
+    #             val = float(val_str)
+    #         except ValueError:
+    #             val = val_str
+    #         golden_dict[key] = val
+
+    # return golden_dict
 
 
 ##############################################

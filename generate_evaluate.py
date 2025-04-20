@@ -11,6 +11,7 @@ from scipy.signal import savgol_filter
 from utils import calculate_end_effector_position
 from analyzer import TrajectoryAnalyzer
 from endeffector_model import TrajectoryTransformer
+from evaluate import *
 
 class EndeffectorGenerator:
     def __init__(self, analyzer, model_path="best_trajectory_transformer.pth"):
@@ -233,7 +234,7 @@ class EndeffectorGenerator:
 
         return user_tensor, target_tensor, interpolated_tensor, normalization_params
     
-    def generate_trajectory(self, target_df, user_df, trajectory_type):
+    def generate_trajectory(self, target_df, user_df, trajectory_type, weight=None):
         """트랜스포머 모델을 사용하여 새로운 궤적 생성"""
         if self.transformer is None:
             print("트랜스포머 모델이 로드되지 않았습니다.")
@@ -244,7 +245,10 @@ class EndeffectorGenerator:
                 target_df, user_df)
 
             with torch.no_grad():
-                generated = self.transformer(user_tensor, target_tensor, interpolated_gt=None)
+                if weight is not None:
+                    generated = self.transformer.generate_with_weight(user_tensor, target_tensor, weight=weight)
+                else:
+                    generated = self.transformer(user_tensor, target_tensor, interpolated_gt=None)
 
             generated_np = generated.squeeze(0).cpu().numpy()
 
@@ -370,20 +374,16 @@ class EndeffectorGenerator:
         else:
             plt.close()
 
-
 def main():
     print("\n======== Trajectory Generation Mode ========")
-    
-    # 디렉토리 및 모델 경로 설정
+
     base_dir = "data"
     model_path = "best_trajectory_transformer.pth"
-    
-    # 모델 경로 확인
+
     if not os.path.exists(model_path):
         print(f"Error: Model file not found: {model_path}")
         return False
-    
-    # 분석기 초기화
+
     try:
         analyzer = TrajectoryAnalyzer(
             classification_model="best_classification_model.pth",
@@ -392,55 +392,58 @@ def main():
     except Exception as e:
         print(f"Error: Failed to initialize analyzer: {str(e)}")
         return False
-    
-    # 생성기 초기화
-    generator = EndeffectorGenerator(analyzer, model_path=model_path)
 
-    # 사용자 궤적 파일 선택
+    generator = EndeffectorGenerator(analyzer, model_path=model_path)
+    evaluator = TrajectoryEvaluator()
+
     non_golden_dir = os.path.join(base_dir, "non_golden_sample")
     non_golden_files = [f for f in os.listdir(non_golden_dir) if f.endswith('.txt')]
-    
+
     if not non_golden_files:
         print("User trajectory file not found.")
         return False
-    
-    # 랜덤하게 하나의 사용자 궤적 선택
+
     selected_file = random.choice(non_golden_files)
-    
-    # 사용자 궤적 로드 및 분류
     user_path = os.path.join(non_golden_dir, selected_file)
     user_trajectory, trajectory_type = analyzer.load_user_trajectory(user_path)
     print(f"\nSelected User Trajectory : {trajectory_type}")
 
-    # 해당 타입의 타겟 궤적 찾기
     golden_dir = os.path.join(base_dir, "golden_sample")
     golden_files = [f for f in os.listdir(golden_dir) if trajectory_type in f and f.endswith('.txt')]
-    
+
     if not golden_files:
         print(f"{trajectory_type} could not find target trajectory of type .")
         return False
-    
-    # 타겟 궤적 로드
+
     target_file = golden_files[0]
     print(f"Matched Target Trajectory: {target_file}")
     target_path = os.path.join(golden_dir, target_file)
     target_trajectory, _ = analyzer.load_user_trajectory(target_path)
 
-    # 트랜스포머 모델을 사용하여 궤적 생성
+    evaluation_result = evaluator.evaluate_trajectory(user_trajectory, trajectory_type)
+    golden_dict = load_golden_evaluation_results(trajectory_type, base_dir)
+    final_score = calculate_score_with_golden(evaluation_result, golden_dict)
+    grade = convert_score_to_rank(final_score)
+    weight = generator.grade_to_weight.get(grade, 0.8)
+
+    print(f"[Final Score] => {final_score:.2f} / 100")
+    print(f"[Final Grade] => {grade}등급")
+    print(f"[Applied Interpolation Weight] => {weight:.2f}")
+
     print("\nGenerating Trajectories With Transformer Models...")
     generated_df, results = generator.generate_trajectory(
         target_df=target_trajectory, 
         user_df=user_trajectory, 
-        trajectory_type=trajectory_type
+        trajectory_type=trajectory_type,
+        weight=weight
     )
-    
+
     if generated_df is None:
         print("Trajectory creation failed")
         return False
-    
+
     print(f"궤적 생성 완료: {len(generated_df)} 포인트")
-    
-    # 생성된 궤적 시각화
+
     print("\n궤적 시각화 중...")
     generator.visualize_trajectories(
         target_df=target_trajectory,
@@ -450,7 +453,7 @@ def main():
         save_path="generated_trajectory.png",
         show=True
     )
-    
+
     print("\n처리 완료!")
     return True
 

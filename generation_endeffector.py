@@ -4,11 +4,13 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
+import sympy as sp
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
-from scipy.interpolate import splprep, splev, UnivariateSpline, CubicSpline
+from scipy.interpolate import splprep, splev, UnivariateSpline
 from utils import *
 from analyzer import TrajectoryAnalyzer
+from endeffector_model import TrajectoryTransformer
 
 class EndeffectorInterpolate:
     def __init__(self, analyzer):
@@ -61,7 +63,6 @@ class EndeffectorInterpolate:
         # 스무딩 적용
         target_smoothed = self.smooth_data(target_data, smoothing_factor=0.5, degree=3)
         user_smoothed = self.smooth_data(user_data, smoothing_factor=0.5, degree=3)
-
         target_degrees = target_smoothed[['deg1', 'deg2', 'deg3', 'deg4']].values
         subject_degrees = user_smoothed[['deg1', 'deg2', 'deg3', 'deg4']].values
 
@@ -95,334 +96,402 @@ class EndeffectorInterpolate:
 
         return nomalized_target, normalized__user
     
-    def linear_interpolate(self, target, user, interpolate_weight=0.5):
-        """대각선 궤적 선형 보간"""
-        # 스무딩 적용
-        target_smoothed = self.smooth_data(target, smoothing_factor=0.5, degree=3)
-        user_smoothed = self.smooth_data(user, smoothing_factor=0.5, degree=3)
-
-        target_endpoint = target_smoothed[['x', 'y', 'z']].values
-        user_endpoint = user_smoothed[['x', 'y', 'z']].values
-
-        # 방향성 분석
-        target_direction = target_endpoint[-1] - target_endpoint[0]
-        user_direction = user_endpoint[-1] - user_endpoint[0]
-        direction_match = np.dot(target_direction, user_direction) > 0
-
-        if not direction_match:
-            user_endpoint = np.flip(user_endpoint, axis=0)
-
-        # 정규화 수행
-        target_normalized, user_normalized = self.normalize_time(target, user)
-
-        # 선형 보간
-        num_points = len(target_normalized)
-        interpolated_ee = np.zeros_like(target_normalized)
-        for i in range(num_points):
-            interpolated_ee[i] = (1 - interpolate_weight) * target_normalized[i] + interpolate_weight * user_normalized[i]
-
-        return interpolated_ee
-
-    def arc_interpolate(self, target, user, interpolate_weight=0.5):
-        """호 궤적 보간"""
-        # 스무딩 적용
-        target_smoothed = self.smooth_data(target, smoothing_factor=0.5, degree=3)
-        user_smoothed = self.smooth_data(user, smoothing_factor=0.5, degree=3)
-
-        target_endpoint = target_smoothed[['x', 'y', 'z']].values
-        user_endpoint = user_smoothed[['x', 'y', 'z']].values
-
-        def arc_length_parameterization(positions):
-            arc_lengths = np.zeros(len(positions))
-            for i in range(1, len(positions)):
-                arc_lengths[i] = arc_lengths[i-1] + np.linalg.norm(positions[i] - positions[i-1])
-            params = arc_lengths / arc_lengths[-1] if arc_lengths[-1] > 0 else np.linspace(0, 1, len(positions))
-            for i in range(1, len(params)):
-                if params[i] <= params[i-1]:
-                    params[i] = params[i-1] + 1e-10
-            return params, arc_lengths[-1]
-
-        target_params, target_length = arc_length_parameterization(target_endpoint)
-        user_params, user_length = arc_length_parameterization(user_endpoint)
-
-        num_points = max(len(target_endpoint), len(user_endpoint))
-        uniform_params = np.linspace(0, 1, num_points)
-
-        target_spline_x = CubicSpline(target_params, target_endpoint[:, 0], bc_type='natural')
-        target_spline_y = CubicSpline(target_params, target_endpoint[:, 1], bc_type='natural')
-        target_spline_z = CubicSpline(target_params, target_endpoint[:, 2], bc_type='natural')
-
-        user_spline_x = CubicSpline(user_params, user_endpoint[:, 0], bc_type='natural')
-        user_spline_y = CubicSpline(user_params, user_endpoint[:, 1], bc_type='natural')
-        user_spline_z = CubicSpline(user_params, user_endpoint[:, 2], bc_type='natural')
-
-        target_uniform = np.column_stack([target_spline_x(uniform_params),
-                                         target_spline_y(uniform_params),
-                                         target_spline_z(uniform_params)])
-        user_uniform = np.column_stack([user_spline_x(uniform_params),
-                                       user_spline_y(uniform_params),
-                                       user_spline_z(uniform_params)])
-
-        def compute_curvature(points):
-            n = len(points)
-            curvature = np.zeros(n)
-            for i in range(1, n-1):
-                v1 = points[i] - points[i-1]
-                v2 = points[i+1] - points[i]
-                speed1 = np.linalg.norm(v1)
-                speed2 = np.linalg.norm(v2)
-                if speed1 < 1e-10 or speed2 < 1e-10:
-                    curvature[i] = 0
-                    continue
-                t1 = v1 / speed1
-                t2 = v2 / speed2
-                dt = t2 - t1
-                curvature[i] = np.linalg.norm(dt) / ((speed1 + speed2) / 2)
-            curvature[0] = curvature[1]
-            curvature[-1] = curvature[-2]
-            return curvature
-
-        target_curvature = compute_curvature(target_uniform)
-        user_curvature = compute_curvature(user_uniform)
-        combined_curvature = np.maximum(target_curvature, user_curvature)
-        curvature_threshold = np.percentile(combined_curvature, 80)
-        control_indices = list(np.where(combined_curvature > curvature_threshold)[0])
-
-        if 0 not in control_indices:
-            control_indices.insert(0, 0)
-        if (num_points - 1) not in control_indices:
-            control_indices.append(num_points - 1)
-
-        if len(control_indices) < 5:
-            additional_needed = 5 - len(control_indices)
-            step = num_points // (additional_needed + 1)
-            for i in range(1, additional_needed + 1):
-                idx = i * step
-                if idx not in control_indices and idx < num_points - 1:
-                    control_indices.append(idx)
-
-        control_indices.sort()
-        t = np.linspace(0, 1, num_points)
-        t_control = np.array([t[i] for i in control_indices])
-
-        control_points = np.zeros((len(control_indices), 3))
-        for i, idx in enumerate(control_indices):
-            control_points[i] = (1 - interpolate_weight) * target_uniform[idx] + interpolate_weight * user_uniform[idx]
-
-        final_spline = CubicSpline(t_control, control_points, bc_type='natural')
-        interpolated_ee = final_spline(t)
-
-        return interpolated_ee
-
-    def circle_interpolate(self, target, user, interpolate_weight=0.5):
-        """원 궤적 보간"""
-        # 스무딩 적용
-        target_smoothed = self.smooth_data(target, smoothing_factor=0.5, degree=3)
-        user_smoothed = self.smooth_data(user, smoothing_factor=0.5, degree=3)
-
-        target_endpoint = target_smoothed[['x', 'y', 'z']].values
-        user_endpoint = user_smoothed[['x', 'y', 'z']].values
-
-        # 시간 정규화
-        target_normalized, user_normalized = self.normalize_time(target, user, num_points=max(len(target_endpoint), len(user_endpoint)))
-
-        target_center = np.mean(target_normalized, axis=0)
-        user_center = np.mean(user_normalized, axis=0)
-        interpolated_center = (1 - interpolate_weight) * target_center + interpolate_weight * user_center
-
-        target_centered = target_normalized - target_center
-        user_centered = user_normalized - user_center
-
-        target_phases = np.unwrap(np.arctan2(target_centered[:, 1], target_centered[:, 0]))
-        user_phases = np.unwrap(np.arctan2(user_centered[:, 1], user_centered[:, 0]))
-
-        phase_offset = target_phases[0] - user_phases[0]
-        user_phases += phase_offset
-
-        target_direction = np.sign(target_phases[-1] - target_phases[0])
-        user_direction = np.sign(user_phases[-1] - user_phases[0])
-        if target_direction != user_direction:
-            user_normalized = np.flip(user_normalized, axis=0)
-            user_centered = user_normalized - user_center
-            user_phases = np.unwrap(np.arctan2(user_centered[:, 1], user_centered[:, 0])) + phase_offset
-
-        target_phase_norm = (target_phases - target_phases.min()) / (target_phases.max() - target_phases.min())
-        user_phase_norm = (user_phases - user_phases.min()) / (user_phases.max() - user_phases.min())
-
-        num_points = len(target_normalized)
-        common_phases = np.linspace(0, 1, num_points)
-
-        def find_nearest_indices(phases, common_phases):
-            return np.array([np.argmin(np.abs(phases - phase)) for phase in common_phases])
-
-        target_indices = find_nearest_indices(target_phase_norm, common_phases)
-        user_indices = find_nearest_indices(user_phase_norm, common_phases)
-
-        target_radii = np.sqrt(target_centered[target_indices, 0]**2 + target_centered[target_indices, 1]**2)
-        user_radii = np.sqrt(user_centered[user_indices, 0]**2 + user_centered[user_indices, 1]**2)
-        target_heights = target_centered[target_indices, 2]
-        user_heights = user_centered[user_indices, 2]
-
-        t = np.linspace(0, 1, num_points)
-        radius_spline = CubicSpline(t, (1 - interpolate_weight) * target_radii + interpolate_weight * user_radii)
-        height_spline = CubicSpline(t, (1 - interpolate_weight) * target_heights + interpolate_weight * user_heights)
-
-        interpolated_radii = radius_spline(t)
-        interpolated_heights = height_spline(t)
-
-        target_rotation_range = target_phases.max() - target_phases.min()
-        user_rotation_range = user_phases.max() - user_phases.min()
-        interpolated_rotation_range = (1 - interpolate_weight) * target_rotation_range + interpolate_weight * user_rotation_range
-
-        interpolated_phases = np.linspace(0, interpolated_rotation_range, num_points)
-
-        interpolated_ee = np.zeros((num_points, 3))
-        for i in range(num_points):
-            phase = interpolated_phases[i]
-            radius = interpolated_radii[i]
-            interpolated_ee[i, 0] = interpolated_center[0] + radius * np.cos(phase)
-            interpolated_ee[i, 1] = interpolated_center[1] + radius * np.sin(phase)
-            interpolated_ee[i, 2] = interpolated_center[2] + interpolated_heights[i]
-
-        return interpolated_ee
+    def load_transformer_model(self, model_path="best_trajectory_transformer.pth"):
+        """학습된 Transformer 모델 로드"""
+        # 기기 설정
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        try:
+            # 체크포인트 로드
+            checkpoint = torch.load(model_path, map_location=self.device)
+            
+            # 기본 모델 파라미터 (모델 구조에 맞게 설정 필요)
+            input_dim = 7  # 위치(3) + 각도(4)
+            self.transformer = TrajectoryTransformer(
+                input_dim=input_dim, 
+                d_model=256, 
+                nhead=8,
+                num_encoder_layers=6,
+                num_decoder_layers=6
+            )
+            
+            # 모델 가중치 로드
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                self.transformer.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.transformer.load_state_dict(checkpoint)
+                
+            # 평가 모드로 설정
+            self.transformer.to(self.device)
+            self.transformer.eval()
+            
+            print(f"Transformer 모델이 성공적으로 로드되었습니다: {model_path}")
+            return True
+        
+        except Exception as e:
+            print(f"Transformer 모델 로드 중 오류 발생: {str(e)}")
+            return False
     
-    def interpolate_trajectory(self, target_df, user_df, trajectory_type, weights=None):
-        """ 궤적 유형에 따라 적절한 보간 방법을 선택하여 궤적을 생성 """
-        print(f"보간 방식: {trajectory_type} 유형 궤적 보간 수행 중...")
+    # def interpolate_trajectory(self, target_df, user_df, trajectory_type, weights=0.5):
+    #     """ 가중치 기반 궤적 보간 - 직접 공간 보간과 각도 보간 모두 수행 """
+    #     # 공간상의 엔드이펙터 보간
+    #     normalized_target, normalized_user = self.normalize_time(target_df, user_df)
+    #     interpolated_points = (1 - weights) * normalized_user + weights * normalized_target
         
-        # 가중치가 None이면 기본값 설정
-        if weights is None:
-            weights = 0.5
+    #     # 관절 각도 보간
+    #     interpolated_degrees = self.interpolate_degrees(target_df, user_df, weights)
+
+    #     num_points = len(interpolated_points)
+    #     interpolated_df = pd.DataFrame({
+    #         'x_end': interpolated_points[:, 0],
+    #         'y_end': interpolated_points[:, 1],
+    #         'z_end': interpolated_points[:, 2],
+    #         'deg1': interpolated_degrees[:, 0],
+    #         'deg2': interpolated_degrees[:, 1],
+    #         'deg3': interpolated_degrees[:, 2],
+    #         'deg4': interpolated_degrees[:, 3],
+    #         'timestamps': np.linspace(0, 1, num_points)
+    #     })
         
-        # 결과 저장 사전
-        results = {}
+    #     # 결과 정보
+    #     results = {
+    #         'trajectory_type': trajectory_type,
+    #         'interpolation_weight': weights,
+    #         'num_points': num_points,
+    #         'space_error': np.mean(np.linalg.norm(normalized_target - normalized_user, axis=1)),
+    #         'joint_error': np.mean(np.abs(
+    #             target_df[['deg1', 'deg2', 'deg3', 'deg4']].values.mean(axis=0) - 
+    #             user_df[['deg1', 'deg2', 'deg3', 'deg4']].values.mean(axis=0)
+    #         ))
+    #     }
+
+    #     interpolated_df = self.smooth_data(interpolated_df, smoothing_factor=0.5)
         
-        # 궤적 유형에 따라 적절한 보간 방법 선택
-        if any(t in trajectory_type.lower() for t in ['d_']):
-            print("선형 궤적 보간 적용")
-            interpolated_ee = self.linear_interpolate(target_df, user_df, weights)
-        elif any(t in trajectory_type.lower() for t in ['clock', 'counter']):
-            print("원형 궤적 보간 적용")
-            interpolated_ee = self.circle_interpolate(target_df, user_df, weights)
-        elif any(t in trajectory_type.lower() for t in ['h_', 'v_']):
-            print("호 궤적 보간 적용")
-            interpolated_ee = self.arc_interpolate(target_df, user_df, weights)
+    #     return interpolated_df, results
+    
+    def _prepare_data_for_transformer(self, df):
+        """데이터프레임을 Transformer 입력 형식으로 변환"""
+        # 관절 각도 추출
+        angles = df[['deg1', 'deg2', 'deg3', 'deg4']].values
+        
+        # 엔드이펙터 위치 계산 또는 추출
+        if 'x_end' in df.columns:
+            positions = df[['x_end', 'y_end', 'z_end']].values
         else:
-            print(f"알 수 없는 궤적 유형: {trajectory_type}, 선형 보간 적용")
-            interpolated_ee = self.linear_interpolate(target_df, user_df, weights)
+            positions = np.array([calculate_end_effector_position(deg) for deg in angles]) * 1000
         
-        # 결과 저장
-        results[f"weight_{weights}"] = interpolated_ee
+        # 특성 결합 (위치 + 각도)
+        features = np.concatenate([positions, angles], axis=1)
+        
+        # 텐서로 변환
+        return torch.tensor(features, dtype=torch.float32).to(self.device)
 
-        return interpolated_ee, results
-    
-    def visualize_trajectories(self, target_ee, user_ee, interpolated_ee, weight=0.5, trajectory_type=None, save_path=None, show=True):
-        """ 보간된 궤적 시각화 """
-        if isinstance(target_ee, pd.DataFrame):
-            target_ee = target_ee.values
-        if isinstance(user_ee, pd.DataFrame):
-            user_ee = user_ee.values
-        if isinstance(interpolated_ee, pd.DataFrame):
-            interpolated_ee = interpolated_ee.values
+    def _compute_spatial_encoding(self, target_df, user_df):
+        """궤적의 공간적 특성을 인코딩"""
+        # 타겟 궤적의 공간적 특성
+        target_angles = target_df[['deg1', 'deg2', 'deg3', 'deg4']].values
+        target_ee = np.array([calculate_end_effector_position(deg) for deg in target_angles]) * 1000
+        
+        # 사용자 궤적의 공간적 특성
+        user_angles = user_df[['deg1', 'deg2', 'deg3', 'deg4']].values
+        user_ee = np.array([calculate_end_effector_position(deg) for deg in user_angles]) * 1000
+        
+        # 공간적 특성 계산
+        # 시작점, 끝점, 중심점
+        target_start = target_ee[0]
+        target_end = target_ee[-1]
+        target_center = np.mean(target_ee, axis=0)
+        
+        user_start = user_ee[0]
+        user_end = user_ee[-1]
+        user_center = np.mean(user_ee, axis=0)
+        
+        # 방향 벡터
+        target_dir = target_end - target_start
+        target_dir_norm = np.linalg.norm(target_dir)
+        if target_dir_norm > 0:
+            target_dir = target_dir / target_dir_norm
+        
+        user_dir = user_end - user_start
+        user_dir_norm = np.linalg.norm(user_dir)
+        if user_dir_norm > 0:
+            user_dir = user_dir / user_dir_norm
+        
+        # 공간 크기
+        target_size = np.linalg.norm(np.max(target_ee, axis=0) - np.min(target_ee, axis=0))
+        user_size = np.linalg.norm(np.max(user_ee, axis=0) - np.min(user_ee, axis=0))
+        
+        # 16차원 공간 인코딩 생성
+        spatial_encoding = np.concatenate([
+            target_start,      # 타겟 시작점 (3)
+            target_end,        # 타겟 끝점 (3)
+            target_center,     # 타겟 중심점 (3)
+            user_start,        # 사용자 시작점 (3)
+            user_end,          # 사용자 끝점 (3)
+            user_center,       # 사용자 중심점 (3)
+            [target_size],     # 타겟 크기 (1)
+            [user_size]        # 사용자 크기 (1)
+        ])
+        
+        return torch.tensor(spatial_encoding, dtype=torch.float32).unsqueeze(0).to(self.device)
 
-        # 3D 그림 생성
-        fig = plt.figure(figsize=(12, 10))
-        ax = fig.add_subplot(111, projection='3d')
+    def interpolate_trajectory(self, target_df, user_df, trajectory_type, weights=0.5):
+        """가중치 기반 궤적 보간 - 직접 공간 보간과 각도 보간에 Transformer 적용"""
+        # Transformer 모델 로드 (아직 로드되지 않은 경우)
+        if not hasattr(self, 'transformer'):
+            self.load_transformer_model()
         
-        # 타겟 궤적 그리기
-        ax.plot(target_ee[:, 0], target_ee[:, 1], target_ee[:, 2], 
-                color='blue', linewidth=2, label='Target Trajectory')
+        # 기존 방식으로 시간 정규화 및 보간
+        normalized_target, normalized_user = self.normalize_time(target_df, user_df)
+        interpolated_points_basic = (1 - weights) * normalized_user + weights * normalized_target
         
-        # 사용자 궤적 그리기
-        ax.plot(user_ee[:, 0], user_ee[:, 1], user_ee[:, 2], 
-                color='red', linewidth=2, label='User Trajectory')
+        # 관절 각도 보간 (기존 방식)
+        interpolated_degrees = self.interpolate_degrees(target_df, user_df, weights)
         
-        # 보간된 궤적 그리기
-        ax.plot(interpolated_ee[:, 0], interpolated_ee[:, 1], interpolated_ee[:, 2], 
-                color='green', linewidth=3, linestyle='-', 
-                label=f'Interpolated (w={weight})')
+        # Transformer가 성공적으로 로드된 경우, 위치 정보 향상
+        if hasattr(self, 'transformer'):
+            # 데이터 준비
+            target_data = self._prepare_data_for_transformer(target_df)
+            user_data = self._prepare_data_for_transformer(user_df)
+            
+            # 궤적 타입 인코딩
+            type_mapping = {"d_": 0, "clock": 1, "counter": 2, "v_": 3, "h_": 4}
+            type_idx = type_mapping.get(trajectory_type, 0)
+            type_tensor = torch.tensor([type_idx], device=self.device)
+            
+            try:
+                # Transformer를 사용한 궤적 보간 - 인자 수정
+                with torch.no_grad():
+                    enhanced_trajectory = self.transformer.interpolate_trajectories(
+                        trajectory1=user_data,
+                        trajectory2=target_data,
+                        interpolate_weight=weights,
+                        traj_type=type_tensor
+                        # spatial_encoding 인자 제거됨
+                    )
+                    
+                    # 결과를 numpy 배열로 변환
+                    enhanced_positions = enhanced_trajectory[:, :3].cpu().numpy()
+                    
+                    # 길이 조정 (필요한 경우)
+                    if len(enhanced_positions) != len(interpolated_points_basic):
+                        from scipy.interpolate import interp1d
+                        
+                        t_orig = np.linspace(0, 1, len(enhanced_positions))
+                        t_target = np.linspace(0, 1, len(interpolated_points_basic))
+                        
+                        # x, y, z 각각에 대해 보간
+                        enhanced_resampled = np.zeros_like(interpolated_points_basic)
+                        for i in range(3):  # x, y, z
+                            interp_func = interp1d(t_orig, enhanced_positions[:, i], kind='cubic')
+                            enhanced_resampled[:, i] = interp_func(t_target)
+                        
+                        enhanced_positions = enhanced_resampled
+                    
+                    # 기존 보간과 Transformer 결과 결합
+                    alpha = 0.6  # Transformer 결과의 가중치 (0.0~1.0)
+                    interpolated_points = (1 - alpha) * interpolated_points_basic + alpha * enhanced_positions
+                
+            except Exception as e:
+                print(f"Transformer 보간 중 오류 발생: {e}")
+                print("기존 보간 방식만 사용합니다.")
+                interpolated_points = interpolated_points_basic
+        else:
+            # Transformer가 로드되지 않은 경우, 기존 방식만 사용
+            interpolated_points = interpolated_points_basic
         
-        # 그래프 설정
-        ax.set_xlabel('X Position (m)')
-        ax.set_ylabel('Y Position (m)')
-        ax.set_zlabel('Z Position (m)')
-        ax.set_title(f'{trajectory_type.capitalize()} Trajectory Interpolation (weight={weight})')
+        # 데이터프레임 생성
+        num_points = len(interpolated_points)
+        interpolated_df = pd.DataFrame({
+            'x_end': interpolated_points[:, 0],
+            'y_end': interpolated_points[:, 1],
+            'z_end': interpolated_points[:, 2],
+            'deg1': interpolated_degrees[:, 0],
+            'deg2': interpolated_degrees[:, 1],
+            'deg3': interpolated_degrees[:, 2],
+            'deg4': interpolated_degrees[:, 3],
+            'timestamps': np.linspace(0, 1, num_points)
+        })
         
-        # 범례 추가
-        ax.legend(loc='best')
+        # 결과 정보
+        results = {
+            'trajectory_type': trajectory_type,
+            'interpolation_weight': weights,
+            'num_points': num_points,
+            'space_error': np.mean(np.linalg.norm(normalized_target - normalized_user, axis=1)),
+            'joint_error': np.mean(np.abs(
+                target_df[['deg1', 'deg2', 'deg3', 'deg4']].values.mean(axis=0) - 
+                user_df[['deg1', 'deg2', 'deg3', 'deg4']].values.mean(axis=0)
+            )),
+            'transformer_enhanced': hasattr(self, 'transformer')
+        }
         
-        # 좌표축 비율 동일하게 설정
-        all_x = np.concatenate([target_ee[:, 0], user_ee[:, 0], interpolated_ee[:, 0]])
-        all_y = np.concatenate([target_ee[:, 1], user_ee[:, 1], interpolated_ee[:, 1]])
-        all_z = np.concatenate([target_ee[:, 2], user_ee[:, 2], interpolated_ee[:, 2]])
+        # 스무딩 적용
+        interpolated_df = self.smooth_data(interpolated_df, smoothing_factor=0.5)
         
-        x_range = all_x.max() - all_x.min()
-        y_range = all_y.max() - all_y.min()
-        z_range = all_z.max() - all_z.min()
-        max_range = max(x_range, y_range, z_range) / 2.0
+        return interpolated_df, results
+
+    def visualize_trajectories(self, target_ee, user_ee, interpolated_ee, weight, trajectory_type, save_path=None, show=True):
+        """ 타겟, 사용자, 보간된 궤적 시각화 """
+        fig = plt.figure(figsize=(20, 10))
+        gs = fig.add_gridspec(1, 2, width_ratios=[1, 1.2]) 
         
-        mid_x = all_x.mean()
-        mid_y = all_y.mean()
-        mid_z = all_z.mean()
+        ax_3d = fig.add_subplot(gs[0, 0], projection='3d')
         
-        ax.set_xlim(mid_x - max_range, mid_x + max_range)
-        ax.set_ylim(mid_y - max_range, mid_y + max_range)
-        ax.set_zlim(mid_z - max_range, mid_z + max_range)
+        # # 타겟 궤적의 엔드이펙터 좌표 추출
+        # if 'x_end' in target_ee.columns:
+        #     target_x = target_ee['x_end'].values
+        #     target_y = target_ee['y_end'].values
+        #     target_z = target_ee['z_end'].values
+        # else:
+        #     # deg 값으로부터 엔드이펙터 계산
+        target_degrees = target_ee[['deg1', 'deg2', 'deg3', 'deg4']].values
+        target_endpoints = np.array([calculate_end_effector_position(deg) for deg in target_degrees]) * 1000
+        target_x, target_y, target_z = target_endpoints[:, 0], target_endpoints[:, 1], target_endpoints[:, 2]
         
-        # 그리드 추가
-        ax.grid(True)
+        # 사용자 궤적의 엔드이펙터 좌표 추출
+        # if 'x_end' in user_ee.columns:
+        #     user_x = user_ee['x_end'].values
+        #     user_y = user_ee['y_end'].values
+        #     user_z = user_ee['z_end'].values
+        # else:
+        #     # deg 값으로부터 엔드이펙터 계산
+        user_degrees = user_ee[['deg1', 'deg2', 'deg3', 'deg4']].values
+        user_endpoints = np.array([calculate_end_effector_position(deg) for deg in user_degrees]) * 1000
+        user_x, user_y, user_z = user_endpoints[:, 0], user_endpoints[:, 1], user_endpoints[:, 2]
         
-        # 결과 파일로 저장
+        # 보간된 궤적의 엔드이펙터 좌표 추출
+        interp_x = interpolated_ee['x_end'].values
+        interp_y = interpolated_ee['y_end'].values
+        interp_z = interpolated_ee['z_end'].values
+        
+        # 궤적 그리기
+        ax_3d.plot(target_x, target_y, target_z, 'b-', linewidth=2, label='target trajectory')
+        ax_3d.plot(user_x, user_y, user_z, 'r-', linewidth=2, label='user trajectory')
+        ax_3d.plot(interp_x, interp_y, interp_z, 'g-', linewidth=2, label='interpolated trajectory')
+        
+        # # 시작점과 끝점 표시
+        # ax_3d.scatter(target_x[0], target_y[0], target_z[0], c='b', marker='o', s=100)
+        # ax_3d.scatter(target_x[-1], target_y[-1], target_z[-1], c='b', marker='x', s=100)
+        
+        # ax_3d.scatter(user_x[0], user_y[0], user_z[0], c='r', marker='o', s=100)
+        # ax_3d.scatter(user_x[-1], user_y[-1], user_z[-1], c='r', marker='x', s=100)
+        
+        # 3D 그래프 설정
+        ax_3d.set_xlabel('X')
+        ax_3d.set_ylabel('Y')
+        ax_3d.set_zlabel('Z')
+        ax_3d.set_title('End-effector Trajectory')
+        ax_3d.legend()
+        
+        # 오른쪽 영역을 2x2 서브플롯으로 분할
+        gs_right = gs[0, 1].subgridspec(2, 2)
+        
+        # 시간축 생성
+        t_target = np.linspace(0, 200, len(target_ee))  # 0-200 범위로 정규화
+        t_user = np.linspace(0, 200, len(user_ee))
+        t_interp = np.linspace(0, 200, len(interpolated_ee))
+        
+        # 관절 각도 그래프 (4개의 관절 각도를 2x2 서브플롯으로)
+        joint_names = ['deg1', 'deg2', 'deg3', 'deg4']
+        positions = [(0, 0), (0, 1), (1, 0), (1, 1)]  # 2x2 그리드 위치
+        
+        for i, (joint_name, pos) in enumerate(zip(joint_names, positions)):
+            # 각 관절을 위한 서브플롯 생성
+            ax = fig.add_subplot(gs_right[pos])
+            
+            # 각 관절 데이터 플로팅
+            if joint_name in target_ee.columns:
+                ax.plot(t_target, target_ee[joint_name].values, 'b--', linewidth=1.5, label='target')
+            
+            if joint_name in user_ee.columns:
+                ax.plot(t_user, user_ee[joint_name].values, 'r:', linewidth=1.5, label='user')
+            
+            if joint_name in interpolated_ee.columns:
+                ax.plot(t_interp, interpolated_ee[joint_name].values, 'g-', linewidth=1.5, label='interpolate')
+            
+            # 그래프 설정
+            ax.set_xlabel('timestamp')
+            ax.set_ylabel('deg')
+            ax.set_title(joint_name)
+            ax.grid(True)
+            ax.legend()
+        
+        # 전체 제목 추가
+        plt.suptitle(f'Trajectory type: {trajectory_type}', fontsize=16)
+        
+        # 레이아웃 조정
+        plt.tight_layout(rect=[0, 0, 1, 0.96])  # 상단 제목을 위한 공간 확보
+        
+        # 그래프 저장
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"그림이 {save_path}에 저장되었습니다.")
         
-        # 화면에 표시
+        # 그래프 표시
         if show:
             plt.show()
         else:
             plt.close()
-            
-        return fig
     
-    def save_generated_trajectory(self, generated_df, classification_result, generation_number=1):
-        """생성된 궤적을 지정된 형식으로 저장"""
-        generation_dir = os.path.join(os.getcwd(), "generation_trajectory")
-        os.makedirs(generation_dir, exist_ok=True)
+    def interpolate_degrees(self, target_df, user_df, weight):
+        """
+        관절 각도 직접 보간
         
-        filename = f"generation_trajectory_{classification_result}_{generation_number}.txt"
-        generation_path = os.path.join(generation_dir, filename)
+        Parameters:
+        - target_df: 타겟 궤적 데이터프레임
+        - user_df: 사용자 궤적 데이터프레임
+        - weight: 보간 가중치 (0: 사용자, 1: 타겟)
         
-        num_points = len(generated_df)
-        full_df = pd.DataFrame(index=range(num_points))
+        Returns:
+        - interpolated_degrees: 보간된 관절 각도 배열
+        """
+        # DTW를 사용해 시퀀스 길이 맞추기
+        target_degrees = target_df[['deg1', 'deg2', 'deg3', 'deg4']].values
+        user_degrees = user_df[['deg1', 'deg2', 'deg3', 'deg4']].values
         
-        full_df['r'] = 'm'
-        full_df['sequence'] = range(num_points)
-        full_df['timestamp'] = [i * 10 for i in range(num_points)]
+        # DTW에 사용할 특징 (관절 각도 기반)
+        _, path = fastdtw(target_degrees, user_degrees, dist=euclidean)
+        path = np.array(path)
         
-        full_df['deg'] = (generated_df['deg1'].round(3).astype(str) + '/' + 
-                        generated_df['deg2'].round(3).astype(str) + '/' +
-                        generated_df['deg3'].round(3).astype(str) + '/' +
-                        generated_df['deg4'].round(3).astype(str))
-
-        full_df['endpoint'] = (generated_df['x_end'].round(3).astype(str) + '/' + 
-                            generated_df['y_end'].round(3).astype(str) + '/' + 
-                            generated_df['z_end'].round(3).astype(str))
+        # 정렬된 관절 각도 생성
+        aligned_target = np.array([target_degrees[i] for i in path[:, 0]])
+        aligned_user = np.array([user_degrees[j] for j in path[:, 1]])
         
-        full_df = full_df[['r', 'sequence', 'timestamp', 'deg', 'endpoint']]
+        # 균일한 길이로 리샘플링
+        num_points = max(len(target_df), len(user_df))
+        t = np.linspace(0, 1, len(aligned_target))
+        t_new = np.linspace(0, 1, num_points)
         
-        full_df.to_csv(generation_path, index=False)
-        print(f"\nCompleted saving the generated trajectory: {generation_path}")
-
-        return generation_path
+        # 각 관절에 대해 스플라인 보간
+        resampled_target = np.zeros((num_points, 4))
+        resampled_user = np.zeros((num_points, 4))
+        
+        for i in range(4):  # 4개 관절
+            spline_target = UnivariateSpline(t, aligned_target[:, i], s=0)
+            spline_user = UnivariateSpline(t, aligned_user[:, i], s=0)
+            
+            resampled_target[:, i] = spline_target(t_new)
+            resampled_user[:, i] = spline_user(t_new)
+        
+        # 가중치 기반 보간
+        interpolated_degrees = (1 - weight) * resampled_user + weight * resampled_target
+        
+        # 관절 제한 적용
+        for joint_idx, (min_angle, max_angle) in self.joint_limits.items():
+            interpolated_degrees[:, joint_idx] = np.clip(
+                interpolated_degrees[:, joint_idx], 
+                min_angle, 
+                max_angle
+            )
+        
+        return interpolated_degrees
     
 def main():
-
     print("\n======== Trajectory Generation Mode ========")
     
     # 디렉토리 및 모델 경로 설정
     base_dir = "data"
-    model_path = "best_generation_model.pth"
+    model_path = "best_trajectory_transformer.pth"
     
     # 모델 경로 확인
     if not os.path.exists(model_path):
@@ -441,6 +510,8 @@ def main():
     
     # 생성기 초기화
     generator = EndeffectorInterpolate(analyzer)
+
+    generator.load_transformer_model(model_path=model_path)
 
     # 사용자 궤적 파일 선택
     non_golden_dir = os.path.join(base_dir, "non_golden_sample")
@@ -499,8 +570,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-            
-

@@ -71,7 +71,7 @@ class TrajectoryAnalyzer:
                 else:
                     raise ValueError(f"Predicted Class Index {predicted_class}is not in the trajectory_types")
             
-            # print(f"Classification Result : {predicted_type}")
+            print(f"\nClassification Result : {predicted_type}")
 
             return preprocessed_df, predicted_type
             
