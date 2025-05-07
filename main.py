@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -146,6 +148,22 @@ def main():
     print(f"\n평가 결과: {score:.2f}점 ({rank}등급)")
     print(f"적용된 보간 가중치: {weight}")
     print("\n궤적 생성 완료!")
+    
+    # ─── 평가·생성까지 완료 ───
+    results = {
+        "selected_file": selected_file,   # 사용자 파일명
+        "target_file"  : target_file,     # 타겟(골든) 파일명
+        "score"        : round(score, 2), # 86.75
+        "rank"         : int(rank),       # 2
+        "timestamp"    : datetime.now().isoformat(timespec="seconds")
+    }
+
+    out_path = os.path.join(base_dir, "data", "trajectory_result.json")
+    with open(out_path, "w", encoding="utf‑8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+
+    print(f"[Python] 결과 JSON 저장 → {out_path}")
+
 
 if __name__ == "__main__":
     main()
