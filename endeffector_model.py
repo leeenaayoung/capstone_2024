@@ -244,8 +244,8 @@ if __name__ == "__main__":
         epochs=100, 
         lr=1e-4,
         save_path="best_trajectory_transformer.pth",
-        patience=10,       # 조기 종료 조건
-        seed=42            # 시드 고정
+        patience=10,       
+        seed=42            
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
