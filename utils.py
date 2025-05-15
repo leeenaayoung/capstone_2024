@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sympy import symbols, cos, sin, Matrix, pi
+# from sympy import symbols, cos, sin, Matrix, pi
 
 ##########################
 # 데이터 전처리
@@ -38,8 +38,8 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
     data_v = data_v.apply(pd.to_numeric, errors='coerce').fillna(0)
     
     # deg2와 deg4에서 90도 빼기
-    data_v['deg2'] = data_v['deg2'] - 90
-    data_v['deg4'] = data_v['deg4'] - 90
+    # data_v['deg2'] = data_v['deg2'] - 90
+    # data_v['deg4'] = data_v['deg4'] - 90
     
     # time 열 생성
     data_v['time'] = data_v['timestamp'] - data_v['sequence'] - 1
