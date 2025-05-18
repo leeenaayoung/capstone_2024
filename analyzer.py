@@ -113,20 +113,20 @@ class TrajectoryAnalyzer:
             print(f"Error loading target trajectory: {str(e)}")
             raise
 
-    def validate_input(df):
-        if len(df) < 3:
-            raise ValueError("Insufficient data points. At least 3 points are required.")
-        if not all(col in df.columns for col in ['x_end', 'y_end', 'z_end']):
-            raise ValueError("Input DataFrame must contain 'x_end', 'y_end', and 'z_end' columns.")
+    # def validate_input(df):
+    #     if len(df) < 3:
+    #         raise ValueError("Insufficient data points. At least 3 points are required.")
+    #     if not all(col in df.columns for col in ['x_end', 'y_end', 'z_end']):
+    #         raise ValueError("Input DataFrame must contain 'x_end', 'y_end', and 'z_end' columns.")
         
-    def classify_trajectory_type(self, trajectory_type: str) -> str:
-        """세부 궤적 유형을 주요 궤적 유형(line, arc, circle)으로 분류"""
-        if any(t in trajectory_type for t in ['d_l', 'd_r']):
-            return 'line'
-        elif any(t in trajectory_type for t in ['v_45', 'v_90', 'v_135', 'v_180', 'h_u', 'h_d']):
-            return 'arc'
-        elif any(t in trajectory_type for t in ['clock_big', 'clock_t', 'clock_m', 'clock_b', 'clock_l', 'clock_r', 'counter_big', 'counter_t', 'counter_m', 'counter_b', 'counter_l', 'counter_r']):
-            return 'circle'
-        else:
-            raise ValueError(f"Unknown trajectory type: {trajectory_type}")
+    # def classify_trajectory_type(self, trajectory_type: str) -> str:
+    #     """세부 궤적 유형을 주요 궤적 유형(line, arc, circle)으로 분류"""
+    #     if any(t in trajectory_type for t in ['d_l', 'd_r']):
+    #         return 'line'
+    #     elif any(t in trajectory_type for t in ['v_45', 'v_90', 'v_135', 'v_180', 'h_u', 'h_d']):
+    #         return 'arc'
+    #     elif any(t in trajectory_type for t in ['clock_big', 'clock_t', 'clock_m', 'clock_b', 'clock_l', 'clock_r', 'counter_big', 'counter_t', 'counter_m', 'counter_b', 'counter_l', 'counter_r']):
+    #         return 'circle'
+    #     else:
+    #         raise ValueError(f"Unknown trajectory type: {trajectory_type}")
     

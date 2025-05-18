@@ -176,7 +176,7 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def train(model, dataloader, device, epochs=100, lr=1e-4, save_path="best_trajectory_transformer.pth", patience=10, seed=42):
+def train(model, dataloader, device, epochs=100, lr=1e-5, save_path="best_trajectory_transformer.pth", patience=10, seed=42):
     set_seed(seed)
 
     model.to(device)
