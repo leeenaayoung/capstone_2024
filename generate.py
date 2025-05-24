@@ -12,11 +12,11 @@ from scipy.interpolate import UnivariateSpline, CubicSpline
 from scipy.signal import savgol_filter
 from utils import calculate_end_effector_position
 from analyzer import TrajectoryAnalyzer
-# from endeffector_model import TrajectoryTransformer
-from generate_model import TrajectoryTransformer
+from endeffector_model import TrajectoryTransformer
+# from generate_model import TrajectoryTransformer
 
 class EndeffectorGenerator:
-    def __init__(self, analyzer, model_path="best_trajectory_transformer_250.pth"):
+    def __init__(self, analyzer, model_path="best_trajectory_transformer.pth"):
         """ 트랜스포머 기반 엔드이펙터 궤적 생성기 """
         self.analyzer = analyzer
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -132,7 +132,7 @@ class EndeffectorGenerator:
 
         return normalized_target, normalized_user
     
-    def prepare_trajectory_input(self, target_df, user_df, max_seq_length=250):
+    def prepare_trajectory_input(self, target_df, user_df, max_seq_length=100):
         """트랜스포머 모델 입력을 위한 궤적 데이터 준비 (위치/각도 분리 정규화)"""
 
         def extract_and_combine(df):
@@ -572,7 +572,7 @@ def main():
     
     # 디렉토리 및 모델 경로 설정
     base_dir = "data"
-    model_path = "best_trajectory_transformer_250.pth"
+    model_path = "best_trajectory_transformer.pth"
     output_dir = "generation_trajectory"
     
     # 모델 경로 확인
