@@ -54,7 +54,9 @@ class TrajectoryAnalyzer:
     def load_user_trajectory(self, file_path: str = "data/non_golden_sample"):
         """ 사용자 궤적 로드 """
         try:
+            print(f"[LOAD] User trajectory from: {file_path}")
             df = pd.read_csv(file_path, delimiter=',')
+            print("[PREVIEW]", df.head(1))
             scaled_df, preprocessed_df = preprocess_trajectory_data(df, scaler=self.c_dataset.scaler, return_raw=True)
 
             # 분류 시 스케일링 적용된 데이터 사용
@@ -82,29 +84,39 @@ class TrajectoryAnalyzer:
     def load_target_trajectory(self, trajectory_type: str, user_df=None):
         """ user_trajectory와 같은 타입의 target_trajectory 로드"""
         try:
-            matching_files = [f for f in os.listdir(self.golden_dir) 
-                            if f.startswith(trajectory_type) and f.endswith('.txt')]
+            # matching_files = [f for f in os.listdir(self.golden_dir) 
+            #                 if f.startswith(trajectory_type) and f.endswith('.txt')]
             
-            if not matching_files:
-                # 매칭되는 파일이 없으면 오류 발생
-                raise ValueError(f"From the golden_sample directory {trajectory_type} can't find the trajectory of the type")
+            # if not matching_files:
+            #     # 매칭되는 파일이 없으면 오류 발생
+            #     raise ValueError(f"From the golden_sample directory {trajectory_type} can't find the trajectory of the type")
             
-            # 용자 궤적의 분류 결과와 동일한 이름의 파일 선택
-            if len(matching_files) == 1:
-                selected_file = matching_files[0]
-            else:
-                exact_matches = [f for f in matching_files if f.startswith(f"{trajectory_type}_")]
-                if exact_matches:
-                    selected_file = exact_matches[0]
-                else:
-                    # 정확한 매치가 없으면 첫 번째 파일 선택
-                    selected_file = matching_files[0]
+            # # 사용자 궤적의 분류 결과와 동일한 이름의 파일 선택
+            # if len(matching_files) == 1:
+            #     selected_file = matching_files[0]
+            # else:
+            #     exact_matches = [f for f in matching_files if f.startswith(f"{trajectory_type}_")]
+            #     if exact_matches:
+            #         selected_file = exact_matches[0]
+            #     else:
+            #         # 정확한 매치가 없으면 첫 번째 파일 선택
+            #         selected_file = matching_files[0]
             
+            # file_path = os.path.join(self.golden_dir, selected_file)
+            # print(f"Using target trajectory: {selected_file}")
+            selected_file = f"{trajectory_type}.txt"
             file_path = os.path.join(self.golden_dir, selected_file)
-            print(f"Using target trajectory: {selected_file}")
+
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File not found: {file_path}")
+
+            print(f"Using exact target trajectory file: {selected_file}")
             
             # 선택된 파일 로드 및 전처리
-            df = pd.read_csv(file_path, delimiter=',')
+            df = pd.read_csv(file_path, delimiter=',', names=[
+                                'r', 'sequence', 'timestamp', 'deg', 'deg/sec', 'mA',
+                                'endpoint', 'grip/rotation', 'torque', 'force', 'ori', '#'
+                            ], header=None)
             _, preprocessed_df = preprocess_trajectory_data(df, scaler=self.c_dataset.scaler, return_raw=True)
             
             return preprocessed_df, selected_file

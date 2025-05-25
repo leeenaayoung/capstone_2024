@@ -51,7 +51,7 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
     
     # 시각화 할 때 사용(스케일링 전 궤적)
     preprocessed_df = data_v.copy()
-
+    
     # 데이터 스케일링
     if scaler is not None:
         scaled_data = scaler.transform(data_v.values)
@@ -59,6 +59,7 @@ def preprocess_trajectory_data(data_list, scaler=None, return_raw=False):
         
         if return_raw:
             return scaled_df, preprocessed_df  
+        
         return scaled_df
     
     return data_v
