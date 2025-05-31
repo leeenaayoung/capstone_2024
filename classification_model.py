@@ -7,19 +7,10 @@ import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from torch.utils.data import DataLoader, Dataset
-from torch import optim
-from tqdm import tqdm
-from scipy.spatial.distance import euclidean
-from fastdtw import fastdtw
-from scipy.interpolate import interp1d
-import matplotlib.pyplot as plt
 from torch.nn.utils.rnn import pad_sequence
-from sklearn.preprocessing import MinMaxScaler
 from utils import preprocess_trajectory_data
 
-##########################
 # 기본 설정 및 시드 고정
-##########################
 def set_seed(seed=42):
     os.environ['PYTHONHASHSEED'] = str(seed)
     random.seed(seed)
@@ -42,9 +33,7 @@ def initialize_weights(m):
         if m.bias is not None:
             torch.nn.init.zeros_(m.bias)
 
-# ##########################
 # # 데이터셋 로드
-# ##########################
 class ClassificationDataset(Dataset):
     def __init__(self, base_path):
         self.data_cache = {}
@@ -97,7 +86,6 @@ def get_unique_labels(base_path):
     tmp_dataset = ClassificationDataset(base_path)
     return sorted(list(set(tmp_dataset.labels)))
 
-# 기존
 def collate_fn(batch, dataset):
     global unique_labels  
     data_list = [item[0] for item in batch]
@@ -109,9 +97,7 @@ def collate_fn(batch, dataset):
 
     return data_padded, label_indices
 
-##########################
 # 분류 모델 정의
-##########################
 class TransformerModel(nn.Module):
     def __init__(self, input_dim, d_model, nhead, num_layers, num_classes, max_len=2000):
         super().__init__()

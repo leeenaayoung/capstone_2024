@@ -22,57 +22,10 @@ class TrajectoryEvaluator:
             }
         }
     
-    # def smooth_data(self, data, smoothing_factor=0.5, degree=3):
-    #     """ 스플라인 스무딩을 사용하여 로봇 관절 각도와 각속도 데이터 스무딩 """
-    #     is_dataframe_input = isinstance(data, pd.DataFrame)
-        
-    #     # NumPy 배열인 경우 DataFrame으로 변환
-    #     if not is_dataframe_input:
-    #         columns = []
-    #         if data.shape[1] >= 4:
-    #             columns += [f'deg{i+1}' for i in range(4)]
-    #         if data.shape[1] >= 8:
-    #             columns += [f'degsec{i+1}' for i in range(4)]
-    #         data = pd.DataFrame(data, columns=columns)
-            
-    #     # 원본 데이터 복사
-    #     smoothed_df = data.copy()
-        
-    #     # 각 열에 대해 스플라인 스무딩 적용
-    #     for col in ['deg1', 'deg2', 'deg3', 'deg4', 'degsec1', 'degsec2', 'degsec3', 'degsec4']:
-    #         if col in data.columns:
-    #             try:
-    #                 # 시간 인덱스 생성
-    #                 x = np.arange(len(data))
-    #                 y = data[col].values
-                    
-    #                 # 데이터의 규모에 따라 스무딩 매개변수 조정
-    #                 s = smoothing_factor * len(data)
-    #                 spline = UnivariateSpline(x, y, k=degree, s=s)
-    #                 smoothed_df[col] = spline(x)
-                    
-    #                 # 각속도 열을 스무딩할 때 물리적 제약 고려
-    #                 if col.startswith('degsec'):
-    #                     angle_col = 'deg' + col[6:]
-    #                     if angle_col in data.columns:
-    #                         pass
-    #             except Exception as e:
-    #                 print(f"Error smoothing column {col}: {str(e)}")
-    #                 # 오류 발생 시 원본 값 유지
-        
-    #     # NumPy 배열로 반환
-    #     if 'deg1' in smoothed_df.columns:
-    #         cols_to_return = [col for col in ['deg1', 'deg2', 'deg3', 'deg4'] if col in smoothed_df.columns]
-    #         return smoothed_df[cols_to_return].values
-    #     else:
-    #         # 열 이름이 맞지 않는 경우
-    #         return smoothed_df.values
-    
     # 직선 궤적 평가
     def evaluate_line(self, user_df):
         # 각도 데이터 추출 및 스무딩
         angle_data = user_df[['deg1', 'deg2', 'deg3', 'deg4']].values
-        # smoothed_angles = self.smooth_data(angle_data)
         
         # End-effector 위치 계산
         user_points = np.array([calculate_end_effector_position(deg) for deg in angle_data])

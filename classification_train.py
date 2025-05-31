@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, random_split
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from functools import partial
-from model import TransformerModel, initialize_weights
+from classification_model import TransformerModel, initialize_weights
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from torch import optim
@@ -147,10 +147,6 @@ def load_and_preprocess_trajectory(file_path, scaler=None):
     # 숫자 변환
     data_v = data_v.apply(pd.to_numeric, errors='coerce').fillna(0)
     
-    # deg2와 deg4에서 90도 빼기
-    data_v['deg2'] = data_v['deg2'] - 90
-    data_v['deg4'] = data_v['deg4'] - 90
-    
     # time 열 생성
     data_v['time'] = data_v['timestamp'] - data_v['sequence'] - 1
     data_v = data_v.drop(['sequence', 'timestamp'], axis=1)
@@ -214,7 +210,7 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     # 학습/검증
-    train_classification(model, classification_train_loader, classification_val_loader, criterion, optimizer, num_epochs)
+    # train_classification(model, classification_train_loader, classification_val_loader, criterion, optimizer, num_epochs)
 
     # 8) 베스트 모델 로드 후 테스트
     best_model = TransformerModel(input_dim, d_model, nhead, num_layers, num_classes).to(device)
@@ -225,7 +221,8 @@ def main():
     # test_classification(best_model, classification_test_loader)
 
     # 단일 궤적 예측 (non_golden_sample 폴더에서 랜덤 파일 선택)
-    non_golden_dir = "data/non_golden_sample"  
+    # non_golden_dir = "data/non_golden_sample"  
+    non_golden_dir = "data/all_golden_sample" 
     txt_files = [f for f in os.listdir(non_golden_dir) if f.endswith('.txt')]
 
     if not txt_files:
