@@ -2,6 +2,8 @@
 This project, titled **“Artificial Intelligence Algorithm for Generating Upper-Limb Rehabilitation Exercises and Routines”** was developed by Team U30A from the Department of Artificial Intelligence, College of Software and Convergence, Hanyang University ERICA, and was submitted to the 2025 Spring Capstone Design Fair.
 The team consists of Nayoung Lee (Student ID: 2022022160) and Dohun Kwak (Student ID: 2022083936), and the project was conducted in industry–academic collaboration with Hexar Human Care Co., Ltd.
 
+This repository is part of a joint project with the [**capstone_unity**](https://github.com/KDohoon/capstone_unity) repository.
+
 ## Requirements
 
 This project is developed using Python 3.10. Please upgrade the basic packages compatible with Python 3.10 before installing the requirements.txt.
