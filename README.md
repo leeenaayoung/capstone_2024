@@ -1,5 +1,6 @@
-# capstone_2024
-This project is submitted by Team U30A from the Department of Artificial Intelligence, College of Software and Convergence, Hanyang University ERICA for the 2025 Spring Capstone FAIR.
+# 2025 Hanyang University ERICA Software Convergence College Capstone Fair
+This project, titled **“Artificial Intelligence Algorithm for Generating Upper-Limb Rehabilitation Exercises and Routines”** was developed by Team U30A from the Department of Artificial Intelligence, College of Software and Convergence, Hanyang University ERICA, and was submitted to the 2025 Spring Capstone Design Fair.
+The team consists of Nayoung Lee (Student ID: 2022022160) and Dohun Kwak (Student ID: 2022083936), and the project was conducted in industry–academic collaboration with Hexar Human Care Co., Ltd.
 
 ## Requirements
 
@@ -18,17 +19,18 @@ pip install torch torchvision torchaudio --extra-index-url https://download.pyto
 
 
 ## Table of Contents
-- [Background](#Background)
-- [Goal](#Goal)
-- [Data_Proprocesing](#Data_Proprocesing)
-- [Trajectory Classification](#Trajectory_Classification)
-- [User Evaluation Metrics](#User_Evaluation_Metrics)
-- [Trajectory Generation](#Trajectory_Generation)
-- [Interactive_Tutorial](#Interactive_Tutorial)
-- [Conclusion](#Conclusion)
+- [Background](#background)
+- [Goal](#goal)
+- [Data Preprocessing](#data-preprocessing)
+- [Trajectory Classification](#trajectory-classification)
+- [User Evaluation Metrics](#user-evaluation-metrics)
+- [Trajectory Generation](#trajectory-generation)
+- [Interactive Tutorial](#interactive-tutorial)
+- [Conclusion](#conclusion)
+
 ----
 
-### Background
+## Background
 South Korea's aging index continues to rise, and according to Statistics Korea data, the aging index has gradually increased from 2020 to 2025. This trend has drawn our attention to stroke, a disease that primarily affects the elderly population.
 
 Stroke causes nerve damage that restricts upper limb movement, particularly shoulder mobility, making upper limb rehabilitation exercises essential for recovery. However, current shoulder rehabilitation programs operate with standardized approaches that fail to adequately consider individual patients' exercise performance capabilities.
@@ -37,15 +39,15 @@ Therefore, **this project aims to develop an AI-based personalized rehabilitatio
 
 ----
 
-### Goal
+## Goal
 1. **Rehabilitation Exercise Trajectory Classification and Recognition**: Understand the continuity of movement patterns and develop algorithms that consider joint-specific exercise characteristics.
 2. **Exercise Performance Evaluation System**: Evaluate the accuracy and completeness of user trajectories and measure current status.
 3. **Adaptive Exercise Trajectory Generation with Difficulty Adjustment**: Generate personalized exercise trajectories based on evaluation results and develop difficulty adjustment algorithms that consider performance capabilities.
 ----
 
-### Data Preprocessing
+## Data Preprocessing
 
-We utilized trajectory data collected directly from Hexar Human Care's U30A device. After collecting 21 feature values and converting them into a structured format, we decomposed the robot's end-effector positions and joint angles into individual features, primarily working with 7 key data points. All data were unified into numerical format, and relative sequence values were converted to absolute time to ensure proper chronological ordering of the time-series data.
+In this study, we utilized trajectory data directly collected from Hexar Human Care’s 4-DOF upper-limb rehabilitation robot, U30A. After collecting 21 feature values and converting them into a structured format, we decomposed the robot's end-effector positions and joint angles into individual features, primarily working with 7 key data points. All data were unified into numerical format, and relative sequence values were converted to absolute time to ensure proper chronological ordering of the time-series data.
 | **Circle** | **Arc** | **Line** |
 |---|---|---|
 | clock_b, clock_m, clock_t, clock_big, clock_l, clock_r, counter_b, counter_m, counter_t, counter_big, counter_l, counter_r | h_d, h_u, v_45, v_90, v_135, v_180 | d_r, d_l |
@@ -54,17 +56,22 @@ A total of 20 predefined trajectory types were collected. Data was gathered from
 
 ----
 
-### Trajectory Classification
-<img width="800" alt="image" src="https://github.com/user-attachments/assets/08fd2ce3-5af5-4d14-acf9-e8942c6b9cf6" />
+## Trajectory Classification
+<p align="center">
+  <img width="960" alt="image" src="./assets/classification.jpg" />
+</p>
 
-> **Fig 1: Transformer Model Structure**
+> **Fig 1: Transformer ClassificationModel Structure and Confusion Matrix**
 
-We designed a Transformer model to classify trajectory types from user input trajectories. The model uses only the Transformer encoder to process time-series data and output a single class label, directly connecting all time points in the trajectory data to assess the complete motion sequence.
-The model leverages Multi-Head Attention to learn distinctive patterns and dependencies specific to each trajectory type, enabling recognition and classification based on the overall morphological characteristics of trajectories. Ultimately, it aggregates information from all time points into a unified vector representation to generate the trajectory classification label.
+A Transformer-based classification model was developed to identify the type of trajectory from user input data.
+The proposed model utilizes only the Transformer Encoder architecture, which learns the temporal dependencies inherent in trajectory sequences and integrates all time steps across the entire motion to produce a predefined single-class label.
+
+By leveraging the Multi-Head Attention mechanism, the model effectively captures trajectory-specific spatiotemporal patterns and interdependencies, thereby enabling the recognition and classification of motion types based on the global morphological characteristics of the trajectory.
+Subsequently, the encoded representations from all time points are aggregated into a unified feature vector, which serves as the basis for final trajectory classification.
 
 ----
 
-### User Evaluation Metrics
+## User Evaluation Metrics
 To assess the user's performance capability and generate appropriate rehabilitation exercise trajectories, evaluation metrics were developed for three types of trajectories: line, arc, and circle. To quantitatively analyze how users performed the trajectories, evaluation was conducted considering the geometric characteristics of the trajectories, focusing on whether the trajectories maintained close proximity to a plane when orthogonally projected in three-dimensional space, with additional evaluation of the unique characteristics of each trajectory type.
 
 * ****Formula Description:****
@@ -90,13 +97,60 @@ To assess the user's performance capability and generate appropriate rehabilitat
 
 Using these evaluation results, we dynamically adjust the interpolation weights between the user trajectory and target trajectory. For users with lower performance capabilities, the generated trajectory maintains a shape closer to their current movement pattern, while for users with superior performance, the generated trajectory approaches the ideal target trajectory shape.
 
-### Trajectory Generation
-<img width="800" alt="image" src="https://github.com/user-attachments/assets/e728eb43-a97d-4561-88c0-195f4eefa854" />
+----
+
+## Trajectory Generation
+<p align="center">
+  <img width="960" alt="image" src="./assets/generation.jpg" />
+</p>
 
 > **Fig 2: E2E Transformer Model Structure**
 
+To generate rehabilitation trajectories that adapt to the user’s motor performance, we designed an End-to-End (E2E) Transformer model.
+The model adopts a Dual Encoder architecture, where the user trajectory and the ideal reference trajectory of the same type are provided as paired inputs and encoded independently.
+Through positional encoding, the model jointly captures temporal dependencies, end-effector positions, and joint angle features, enabling it to learn both the overall geometric structure and drawing patterns of the trajectory.
 
-### Interactive Tutorial
-### Conclusion
+During training, interpolated ground-truth values are used to fuse the feature representations of the user and reference trajectories, with multiple weighting strategies applied to learn appropriate interpolation patterns.
+During inference, the model performs autoregressive generation without ground-truth supervision, allowing it to produce personalized rehabilitation trajectories tailored to each user’s performance level.
+
+<p align="center">
+  <img src="./assets/generation_result_1.jpg" width="45%" />
+  <img src="./assets/generation_result_2.jpg" width="45%" /><br>
+  <img src="./assets/generation_result_3.jpg" width="45%" />
+  <img src="./assets/generation_result_4.jpg" width="45%" />
+</p>
+
+> **Fig 3: Trajectory Generation Results**
+
+Fig 3 presents the visualization of the 3D end-effector positions and joint angle trajectories of the generated motion.
+The red trajectory represents the user’s original motion, the blue trajectory denotes the ideal reference trajectory, and the green trajectory corresponds to the newly generated one.
+The generated trajectory demonstrates an intermediate level of difficulty—more challenging than the user’s original trajectory but easier than the ideal reference—reflecting the model’s adaptive generation capability.
+
+<p align="center">
+  <img width="860" alt="image" src="./assets/generation_test.png" />
+</p>
+
+> **Fig 4: Clock_L Motion Test on the U30A Robots**
+
+By applying the generated joint angle trajectories to the U30A robot, we verified that the motions were correctly generated within the robot’s joint range of motion.
+This confirms that the proposed system can generate adaptive upper-limb rehabilitation trajectories that respond to the user’s performance while respecting the hardware’s physical constraints.
 
 ----
+
+## Interactive Tutorial
+<p align="center">
+  <img width="860" alt="image" src="./assets/interactive_tutorial.png" />
+</p>
+
+> **Fig 5: Interactive Tutorial User Guide Screen**
+
+After visualizing the generated rehabilitation trajectories, we developed a Unity-based interactive tutorial that displays each user’s score and performance grade, allowing users to observe and follow the generated exercises directly.
+To enhance engagement, a “connect-the-stars” concept was applied to the tutorial, where users trace the trajectory path interactively.
+The starting and ending points of each trajectory are clearly marked in red and yellow, respectively, to help users easily identify the direction and flow of the motion.
+
+----
+
+## Conclusion
+Finally, we implemented a personalized trajectory generation model that communicates with the robot in real time to verify that trajectories are correctly generated.
+The system provides visual guidance to help users follow the generated trajectories and creates optimized exercise paths tailored to each individual, enabling a more engaging and personalized rehabilitation experience.
+In future work, we plan to incorporate continuous self-regressive tracking into the model’s training process to dynamically assess user progress and gradually adjust exercise difficulty, thereby enhancing user motivation throughout the rehabilitation process.
