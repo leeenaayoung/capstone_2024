@@ -24,6 +24,8 @@ pip install torch torchvision torchaudio --extra-index-url https://download.pyto
 - [Trajectory Classification](#Trajectory_Classification)
 - [User Evaluation Metrics](#User_Evaluation_Metrics)
 - [Trajectory Generation](#Trajectory_Generation)
+- [Interactive_Tutorial](#Interactive_Tutorial)
+- [Conclusion](#Conclusion)
 ----
 
 ### Background
@@ -53,7 +55,7 @@ A total of 20 predefined trajectory types were collected. Data was gathered from
 ----
 
 ### Trajectory Classification
-<img width="632" alt="image" src="https://github.com/user-attachments/assets/08fd2ce3-5af5-4d14-acf9-e8942c6b9cf6" />
+<img width="800" alt="image" src="https://github.com/user-attachments/assets/08fd2ce3-5af5-4d14-acf9-e8942c6b9cf6" />
 
 > **Fig 1: Transformer Model Structure**
 
@@ -89,7 +91,8 @@ To assess the user's performance capability and generate appropriate rehabilitat
 Using these evaluation results, we dynamically adjust the interpolation weights between the user trajectory and target trajectory. For users with lower performance capabilities, the generated trajectory maintains a shape closer to their current movement pattern, while for users with superior performance, the generated trajectory approaches the ideal target trajectory shape.
 
 ### Trajectory Generation
-<img width="599" alt="image" src="https://github.com/user-attachments/assets/e728eb43-a97d-4561-88c0-195f4eefa854" />
+<img width="800" alt="image" src="https://github.com/user-attachments/assets/e728eb43-a97d-4561-88c0-195f4eefa854" />
+
 > **Fig 2: E2E Transformer Model Structure**
 
 
