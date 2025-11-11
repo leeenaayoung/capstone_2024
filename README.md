@@ -61,7 +61,7 @@ A total of 20 predefined trajectory types were collected. Data was gathered from
   <img width="960" alt="image" src="./assets/classification.jpg" />
 </p>
 
-> **Fig 1: Transformer ClassificationModel Structure and Confusion Matrix**
+> **Fig 1: Transformer Classification Model Structure and Confusion Matrix**
 
 A Transformer-based classification model was developed to identify the type of trajectory from user input data.
 The proposed model utilizes only the Transformer Encoder architecture, which learns the temporal dependencies inherent in trajectory sequences and integrates all time steps across the entire motion to produce a predefined single-class label.
